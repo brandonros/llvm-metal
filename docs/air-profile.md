@@ -51,5 +51,7 @@ provide a trusted kernel and satisfy all dynamic bounds, alias and race rules.
 The test harness uses separate guarded allocations and reads outputs only after
 command completion. Winner publication is checked at this host synchronization
 point; this does not demonstrate release/acquire publication to concurrent GPU
-consumers. Runtime reflection, asynchronous queues, reusable GPU allocations,
-multi-kernel libraries and application integration remain future work.
+consumers. PreparedKernel reuses fixed-size shared allocations across synchronous launches and
+returns upload/download, wall and optional GPU command-buffer timings. Library
+and pipeline creation have separate timings. Runtime reflection, asynchronous
+queues and multi-kernel libraries remain future work.

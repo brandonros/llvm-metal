@@ -763,3 +763,45 @@ fn shallenge_batches_publish_complete_cpu_checked_results() {
         kernel.device_name()
     );
 }
+
+#[test]
+#[ignore = "requires Apple GPU and pinned llvm-downgrade"]
+fn prepared_buffers_reuse_storage_and_reject_changed_shapes() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let library = package_air(
+        &root.join("tests/fixtures/air/add42.ll"),
+        "add42",
+        &root.join("target/metal-tests/prepared"),
+    );
+    let bindings = buffer_interface("add42", 4, 4).validate().unwrap();
+    let kernel = Kernel::load(&library, &bindings).unwrap();
+    let mut buffers = [
+        Buffer {
+            bytes: vec![0; 4],
+            offset: 0,
+        },
+        Buffer {
+            bytes: vec![0; 4],
+            offset: 0,
+        },
+    ];
+    let mut prepared = kernel.prepare(&buffers).unwrap();
+    for value in [0_u32, 7, u32::MAX, 42] {
+        buffers[0].bytes.copy_from_slice(&value.to_le_bytes());
+        // SAFETY: the reference entry accesses one disjoint u32 per buffer.
+        let timings = unsafe { prepared.run(&mut buffers, 1, 1).unwrap() };
+        assert_eq!(buffers[1].bytes, value.wrapping_add(42).to_le_bytes());
+        assert!(timings.wall >= timings.upload + timings.download);
+    }
+    buffers[1].bytes.push(0);
+    // SAFETY: the shape check rejects this before any dispatch.
+    assert!(
+        unsafe { prepared.run(&mut buffers, 1, 1) }
+            .unwrap_err()
+            .contains("stay fixed")
+    );
+    buffers[1].bytes.pop();
+    // SAFETY: these dispatch contracts are rejected before executing.
+    assert!(unsafe { prepared.run(&mut buffers, 2, 1) }.is_err());
+    assert!(unsafe { prepared.run(&mut buffers, 1, 0) }.is_err());
+}
