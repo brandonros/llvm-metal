@@ -1,0 +1,11 @@
+[workspace]
+members = ["crates/compiler"]
+resolver = "3"
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.85"
+repository = "https://github.com/brandonros/llvm-metal"
+
+[workspace.dependencies]
+inkwell = { version = "=0.10.0", default-features = false, features = ["llvm21-1-prefer-dynamic", "target-aarch64", "target-x86"] }
