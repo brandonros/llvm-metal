@@ -12,6 +12,24 @@ probes, and RSA-PSS/RSA-modulus implementations. Paths below are relative to
 `vanity-miner-rs/crates/logic/src/`. Existing probes are source material, not
 evidence that they work through llvm-metal.
 
+## Current checkpoint
+
+Implemented and checked on Apple M5/macOS 26.6.2:
+
+- Reference AIR → LLVM downgrade → metallib → runtime, then a stock Rust buffer kernel.
+- Reduced rotate/lookup/copy/fill kernels and production fixed-length SHA-256.
+- SHA operations, schedule word, one round and compression, using local
+  feature-gated consumer exports with independent answers. These exports are
+  not yet in the pinned Git dependency; publication and repinning remain pending.
+- Production nonce generation, hash comparison and a complete Shallenge candidate.
+- A fixture batch kernel with bounds checks, device fetch-add counters and winner
+  indices, checked after command completion against the CPU oracle.
+
+The tested batch wrapper is not yet integrated into vanity-miner's application
+backend. Performance, other GPU/OS combinations, general memory ordering,
+wide-integer support and the other crypto workloads remain open. See the
+[implemented AIR profile](air-profile.md) and [commands](../tests/rust-fixtures/README.md).
+
 ## 2.0 Establish the execution and isolation machinery
 
 Complete the output compatibility experiment: known-valid AIR → selected LLVM
@@ -315,5 +333,6 @@ recognize a fixture name or substitute a canned answer.
 Record parsing, legalization, AIR serialization, library loading, pipeline
 creation and execution separately. Unsupported cases and current GPU skips are
 visible backlog entries, not ignored passing tests. A milestone is accepted
-only when its output has been checked on Apple GPUs. Current native tests are
-useful fixture validation but do not satisfy any GPU milestone above.
+only when its output has been checked on Apple GPUs. Native-only tests are
+useful fixture validation but do not satisfy GPU milestones; use the explicit
+Metal suite for the implemented checkpoint above.

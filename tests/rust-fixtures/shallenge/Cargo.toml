@@ -8,6 +8,10 @@ publish = false
 [workspace]
 resolver = "3"
 
+[features]
+# build.py wires this to the consumer feature only in an explicit local snapshot.
+compiler-probes = []
+
 [dependencies.vanity-logic]
 package = "logic"
 git = "https://github.com/brandonros/vanity-miner-rs"
@@ -18,4 +22,3 @@ features = ["shallenge"]
 [profile.release]
 panic = "abort"
 codegen-units = 1
-

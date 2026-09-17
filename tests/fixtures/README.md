@@ -23,11 +23,11 @@ itself. No large application artifacts or private mining inputs belong here.
 
 | Fixtures | LLVM parse / verify / bitcode round trip | Native CPU oracle | AIR / Apple GPU |
 |---|---|---|---|
-| 01–04: wrapping add, rotate, zero-defined CLZ, carry | Tested | Boundary values + deterministic cases | Not implemented |
-| 05–07: branch PHI, loop PHI, helper calls | Tested | Both paths, zero/many iterations, overflow | Not implemented |
-| 08–09: pointer helper and byte copy | Tested | Guard elements/bytes and exact write footprint | Not implemented |
-| 10: SHA-256 small sigma0 | Tested | Fixed answers + Rust reference | Not implemented |
-| 11–12: invocation index and device atomic | Tested | Not executable on CPU through this harness | Not implemented |
+| 01–04: wrapping add, rotate, zero-defined CLZ, carry | Tested | Boundary values + deterministic cases | Separate GPU fixtures |
+| 05–07: branch PHI, loop PHI, helper calls | Tested | Both paths, zero/many iterations, overflow | Separate GPU fixtures |
+| 08–09: pointer helper and byte copy | Tested | Guard elements/bytes and exact write footprint | Separate GPU fixtures |
+| 10: SHA-256 small sigma0 | Tested | Fixed answers + Rust reference | Separate GPU fixtures |
+| 11–12: invocation index and device atomic | Tested | Not executable on CPU through this harness | Separate GPU fixtures |
 | Negative syntax / SSA dominance | Rejected at the expected stage | Not applicable | Not applicable |
 
 The first ten fixtures intentionally have no device triple: the test harness
@@ -36,12 +36,20 @@ oracles run from textual and bitcode inputs at two JIT code-generation optimizat
 levels. This does not test an LLVM IR optimization pipeline, address-space
 conversion, Metal dispatch, or concurrency. Fixtures 11–12 preserve NVPTX target
 information, a proposed device-operation declaration, metadata and device-space
-atomics through input parsing; their GPU semantics remain unimplemented.
+atomics through input parsing. These original parser fixtures are not the Metal ABI;
+the explicit device operations and GPU tests are described in
+[the AIR profile](../../docs/air-profile.md).
 
 Positive means structurally valid LLVM, not supported Metal. Unsupported but
-valid LLVM will need separate legalization-rejection tests once that stage exists.
+valid LLVM is covered by separate legalization-rejection tests.
 Never JIT an arbitrary submitted module: the native harness executes only the
 reviewed fixtures with exact function signatures and bounded inputs.
+
+Actual Metal execution is covered in `crates/compiler/tests/metal.rs`: reference
+AIR, a stock Rust buffer kernel, reduced memory operations, SHA intermediates,
+pinned production SHA/nonce/comparison/candidate routines, and guarded batch
+execution with device atomic counters. Those tests require an explicit run on
+an Apple GPU; the tables above describe the original input fixtures only.
 
 ## Build coverage in these steps
 

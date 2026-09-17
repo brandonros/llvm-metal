@@ -1,0 +1,16 @@
+[package]
+name = "llvm-metal-runtime"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+llvm-metal-abi = { path = "../abi" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-metal = "0.3.2"
+objc2-foundation = "0.3.2"
+
+[dev-dependencies]
+llvm-metal-metallib = { path = "../metallib" }

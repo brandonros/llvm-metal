@@ -99,3 +99,51 @@ fn usage_errors_are_distinct_from_help() {
         assert_eq!(run(&args).status.code(), Some(2));
     }
 }
+
+#[test]
+fn compile_writes_verified_air_library_and_bindings_or_rejects_before_output() {
+    let temporary = tempfile::tempdir().unwrap();
+    let input = temporary.path().join("input.ll");
+    let interface = temporary.path().join("interface.json");
+    let directory = temporary.path().join("output");
+    std::fs::write(&input, "target triple = \"nvptx64-nvidia-cuda\"\ntarget datalayout = \"e-p:64:64-i64:64\"\ndefine void @kernel(ptr %p) { store i32 42, ptr %p\nret void }").unwrap();
+    std::fs::write(&interface, r#"{"schema":1,"entry":"kernel","calling_convention":"C","invocations":1,"arguments":[{"name":"output","kind":"buffer","access":"write","bytes":4,"alignment":4}],"aliasing":"disjoint"}"#).unwrap();
+    let args = [
+        "compile",
+        input.to_str().unwrap(),
+        "--interface",
+        interface.to_str().unwrap(),
+        "--output",
+        directory.to_str().unwrap(),
+    ];
+    let output = run(&args);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("GPU execution has not been checked"));
+    let context = inkwell::context::Context::create();
+    llvm_metal_compiler::parse_bitcode(
+        &context,
+        &std::fs::read(directory.join("kernel.air.bc")).unwrap(),
+        "cli-air",
+    )
+    .unwrap();
+    let bindings: llvm_metal_abi::MetalBindings =
+        serde_json::from_slice(&std::fs::read(directory.join("kernel.bindings.json")).unwrap())
+            .unwrap();
+    assert_eq!(bindings.entry, "kernel");
+    assert_eq!(bindings.buffers[0].minimum_bytes, 4);
+    assert!(
+        std::fs::read(directory.join("kernel.metallib"))
+            .unwrap()
+            .starts_with(b"MTLB")
+    );
+    std::fs::remove_dir_all(&directory).unwrap();
+    std::fs::write(&input, "target triple = \"nvptx64-nvidia-cuda\"\ntarget datalayout = \"e-p:64:64-i64:64\"\ndefine void @kernel(ptr %p) { store volatile i32 42, ptr %p\nret void }").unwrap();
+    let output = run(&args);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(!directory.exists());
+}

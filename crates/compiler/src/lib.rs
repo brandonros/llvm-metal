@@ -77,3 +77,5 @@ fn verify(module: Module<'_>) -> Result<Module<'_>, InputError> {
         .map_err(|error| InputError::Verify(error.to_string()))?;
     Ok(module)
 }
+pub mod air;
+pub mod compile;
