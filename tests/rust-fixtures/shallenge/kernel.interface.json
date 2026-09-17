@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "entry": "shallenge_sha256_32",
+  "calling_convention": "C",
+  "invocations": 1,
+  "arguments": [
+    { "name": "input", "kind": "buffer", "access": "read", "bytes": 32, "alignment": 1 },
+    { "name": "output", "kind": "buffer", "access": "write", "bytes": 32, "alignment": 1 }
+  ],
+  "aliasing": "input and output must not overlap"
+}

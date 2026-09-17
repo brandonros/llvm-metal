@@ -27,3 +27,6 @@ See [the fixture policy and progression](tests/fixtures/README.md) for the steps
 between scalar operations and complete crypto kernels. Only the compiler crate
 exists today; ABI, packaging and runtime crates will be added with their first
 tested implementation.
+
+The [pinned Rust integration fixture](tests/rust-fixtures/README.md) builds the
+real vanity-miner Shallenge SHA-256 routine into complete NVPTX LLVM bitcode.

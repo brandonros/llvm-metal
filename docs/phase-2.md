@@ -89,7 +89,8 @@ The source has both `sha256_32_from_bytes` and `Sha256::update/finalize`.
 Shallenge's fixed-size preimage uses the first; passing the generic streaming
 path does not establish the specialized path, or vice versa. Keep the original
 unrolled implementation as the acceptance target. A looped diagnostic version
-does not replace it.
+does not replace it. Generic padding/streaming coverage is a separate branch;
+it is not a prerequisite for Shallenge's first complete fixed-length candidate.
 
 Reuse exact tests `shallenge.sha256_padding_0`, `_55`, `_56`, `_63`, `_64`, `_65`,
 `sha256_streaming_boundary`, `sha256_multiblock`, and `sha256_streaming_chunks`.
@@ -296,10 +297,14 @@ preserve exact binary fixtures only for encoding compatibility regressions.
 Expose a stage's diagnostic output through a test wrapper, without changing the
 production algorithm solely to make the compiler's job easier.
 
-Put capture wrappers and workload vectors in vanity-miner-rs; keep reduced,
-self-contained compiler regression fixtures in llvm-metal. Do not add a live
-vanity-miner dependency to the reusable compiler or duplicate entire crypto
-implementations. Preserve source licensing/attribution for copied reductions.
+Use a separate, explicitly invoked Cargo workspace under llvm-metal's
+`tests/rust-fixtures/` for wrappers around public vanity-miner functions. Pin the
+Git revision, dependency lockfile and stock Rust producer; the initial Shallenge
+fixture follows this approach. Narrow exports for currently private operations
+still belong in vanity-miner-rs. Keep reduced, self-contained compiler regression
+fixtures in llvm-metal, and keep the reusable compiler independent of vanity-miner.
+Do not duplicate entire crypto implementations. Preserve source licensing and
+attribution for copied reductions.
 
 For each case: establish independent expected outputs → show the failing target
 stage → implement that stage → check raw GPU outputs/guards → rerun immediate

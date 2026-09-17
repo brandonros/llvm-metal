@@ -13,7 +13,7 @@ When a Rust-generated pattern matters, retain the minimal Rust source and
 reproduction command alongside its captured IR. Do not make ordinary tests
 depend on recompiling with an arbitrary installed rustc.
 
-Current fixtures are hand-written for this project; they are not extracted from
+The fixtures in this directory are hand-written for this project; they are not extracted from
 vanity-miner's compiler output. Their expected values live in
 `crates/compiler/tests/semantics.rs` as Rust reference operations and fixed
 answers. A round-trip text comparison checks preservation, not correctness by
@@ -87,3 +87,8 @@ The existing CPU oracle stays fixed when adding AIR tests. Compare GPU results
 against it and known-answer vectors; do not derive expected results from the new
 backend. Keep parsing, legalization, packaging, pipeline creation and execution
 results separate so a frontend success never stands in for GPU correctness.
+
+The separate [Rust integration lane](../rust-fixtures/README.md) compiles a pinned
+vanity-miner dependency with a pinned stock toolchain. Its generated `.ll` and
+`.bc` remain under `target/`; promote a reduced capture here when it becomes a
+specific compiler regression. Ordinary compiler tests do not rebuild that crate.
