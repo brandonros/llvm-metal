@@ -278,8 +278,13 @@ then checked private-key-to-address derivation using the production helper.
 Single-key and guarded batch tests compare the public coordinates and address
 against the CPU, including invalid keys and excess dispatch lanes. Keccak uses
 the existing integer lowering; no permutation-specific compiler support was
-needed. Candidate generation, prefix/suffix matching, shared winner publication,
-and CLI integration remain the next steps. Isolate permutation steps/rounds if
+needed. The consumer's isolated Metal branch now also provides candidate
+generation, prefix/suffix matching, shared winner publication, and Ethereum CLI
+integration. Its application tests check all lanes, invalid requests, partial
+grids, winner reconstruction, and bounded searches with and without matches.
+It uses an explicit local compiler override until the new compiler is published;
+the older pinned Shallenge compiler is insufficient. Performance tuning and
+broader workload acceptance remain separate steps. Isolate permutation steps/rounds if
 a future Keccak regression requires a smaller reproducer.
 
 P-256 public-key work reuses hashing/layout support but must test its own field

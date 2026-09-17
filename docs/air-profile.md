@@ -54,6 +54,11 @@ using LLVM's address-space inference through a small C++ bridge. It removes
 source PIC/PIE code-generation flags and scoped alias/lifetime hints. Function
 and call-site noinline hints are removed to inline defined helpers. Other
 language semantics are preserved; no fixture name triggers a special lowering.
+Nullable pointer PHIs are explicitly typed only when all concrete underlying
+objects prove the same device or constant address space. Null/undef inputs are
+retained in that space; mixed private/device or device/constant merges remain
+unsupported. The AIR profile uses zero-valued null pointers in its supported
+spaces, allowing the constant null casts introduced by inference to fold.
 The compiler emits AIR 2.4/Metal 3.0 metadata and resource limits. The pinned
 LLVM-21-compatible llvm-downgrade writes bitcode version 14; native LLVM verifies
 that result before the single-function macOS metallib container is constructed.

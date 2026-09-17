@@ -627,11 +627,19 @@ pub fn legalize<'ctx>(
         return Err("helper could not be inlined into the Metal entry".into());
     }
     for block in entry.get_basic_blocks() {
-        if block
+        if let Some(cast) = block
             .get_instructions()
-            .any(|i| i.get_opcode() == InstructionOpcode::AddrSpaceCast)
+            .find(|i| i.get_opcode() == InstructionOpcode::AddrSpaceCast)
         {
-            return Err("device pointer escaped address-space inference".into());
+            use inkwell::values::AnyValue;
+            let user = cast
+                .get_first_use()
+                .map(|u| u.get_user().print_to_string().to_string())
+                .unwrap_or_default();
+            return Err(format!(
+                "device pointer escaped address-space inference: {}; user: {user}",
+                cast.print_to_string()
+            ));
         }
     }
     let n = |x| context.i32_type().const_int(x, false).into();
