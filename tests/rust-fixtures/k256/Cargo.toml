@@ -20,7 +20,7 @@ package = "logic"
 git = "https://github.com/brandonros/vanity-miner-rs"
 rev = "f26605ebddc829dd3d6b5f3f4c3cd6276c14f2de"
 default-features = false
-features = ["bitcoin"]
+features = ["bitcoin", "ethereum"]
 optional = true
 
 [dev-dependencies]

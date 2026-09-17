@@ -15,6 +15,22 @@ fn be(hex: &str) -> Vec<u8> {
 }
 
 fn cases(entry: &str) -> Vec<Vec<u8>> {
+    if entry == "consumer_keccak256" {
+        let half = be("61a314b0183724ea0e5f237584cb76092e253b99783d846a5b10db155128eafd");
+        let mut inputs = vec![
+            vec![0; 64],
+            vec![0xff; 64],
+            (0u8..64).collect(),
+            [half.clone(), half].concat(),
+        ];
+        // Every bit and byte position is exercised across the 64-byte input.
+        for bit in 0..512 {
+            let mut input = vec![0; 64];
+            input[bit / 8] = 1 << (bit % 8);
+            inputs.push(input);
+        }
+        return inputs;
+    }
     if entry == "k256_point_double" {
         let g = be(
             "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8",
@@ -252,21 +268,43 @@ fn consumer_public_keys() {
 #[test]
 #[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
 fn consumer_public_key_batches() {
-    let (root, kernel, _) = build_kernel("consumer_public_keys_batch");
-    let inputs = cases("consumer_public_keys");
+    check_batches("consumer_public_keys", 99);
+}
+
+#[test]
+#[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
+fn consumer_keccak256() {
+    check("consumer_keccak256");
+}
+
+#[test]
+#[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
+fn consumer_ethereum_address() {
+    check("consumer_ethereum_address");
+}
+
+#[test]
+#[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
+fn consumer_ethereum_address_batches() {
+    check_batches("consumer_ethereum_address", 85);
+}
+
+fn check_batches(entry: &str, record_size: usize) {
+    let (root, kernel, _) = build_kernel(&format!("{entry}_batch"));
+    let inputs = cases(entry);
     for count in [0usize, 1, 31, 32, 33, 65, 129, 257] {
         let keys: Vec<_> = (0..count)
             .flat_map(|i| inputs[i % inputs.len()].iter().copied())
             .collect();
-        let expected = oracle(&root, "consumer_public_keys", keys.clone());
-        assert_eq!(expected.len(), count * 99);
+        let expected = oracle(&root, entry, keys.clone());
+        assert_eq!(expected.len(), count * record_size);
         for group in [32usize, 64] {
             let mut source = vec![0x5a; 256];
             source.extend((count as u32).to_le_bytes());
             source.extend(&keys);
             source.extend([0x5a; 256]);
             let original = source.clone();
-            let capacity = count.max(1) * 99;
+            let capacity = count.max(1) * record_size;
             let mut buffers = [
                 Buffer {
                     bytes: source,
@@ -279,7 +317,8 @@ fn consumer_public_key_batches() {
             ];
             // SAFETY: count matches allocated inputs/outputs. Excess lanes are bounded by the kernel.
             unsafe {
-                kernel.run(&mut buffers, count.max(1), group).unwrap();
+                let threads = count.max(1).div_ceil(group) * group;
+                kernel.run(&mut buffers, threads, group).unwrap();
             }
             assert_eq!(buffers[0].bytes, original);
             let mut output = vec![0xa5; 512 + capacity];

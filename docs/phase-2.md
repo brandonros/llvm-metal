@@ -273,9 +273,14 @@ The existing skipped RSA-PSS end-to-end case remains an explicit final target.
 
 ## 2.7 Remaining consumers and full workload acceptance
 
-Ethereum reuses k256 but needs uncompressed point encoding plus Keccak. Build
-Keccak permutation steps/one round before its existing 64-byte-input hash, then
-address extraction and candidate tests.
+Ethereum fixtures now cover the consumer's 64-byte Keccak hash independently,
+then checked private-key-to-address derivation using the production helper.
+Single-key and guarded batch tests compare the public coordinates and address
+against the CPU, including invalid keys and excess dispatch lanes. Keccak uses
+the existing integer lowering; no permutation-specific compiler support was
+needed. Candidate generation, prefix/suffix matching, shared winner publication,
+and CLI integration remain the next steps. Isolate permutation steps/rounds if
+a future Keccak regression requires a smaller reproducer.
 
 P-256 public-key work reuses hashing/layout support but must test its own field
 and scalar arithmetic. Its current `point_double` check calls public-key

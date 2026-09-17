@@ -132,6 +132,10 @@ pub fn probe(entry: &str) -> Option<(usize, usize, Probe)> {
         "k256_scalar_mul" => Some((32, 99, k256_scalar_mul)),
         #[cfg(feature = "consumer")]
         "consumer_public_keys" => Some((32, 99, consumer_public_keys)),
+        #[cfg(feature = "consumer")]
+        "consumer_keccak256" => Some((64, 32, consumer_keccak256)),
+        #[cfg(feature = "consumer")]
+        "consumer_ethereum_address" => Some((32, 85, consumer_ethereum_address)),
         _ => None,
     }
 }

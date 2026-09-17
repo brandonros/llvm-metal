@@ -108,12 +108,22 @@ nix develop path:.#rust-fixtures --command env \
 | `k256_scalar_mul` | Private scalar[32] → validity + compressed[33] + uncompressed[65] | 27 runtime keys |
 | `consumer_public_keys` | Same contract, actual checked production functions | 27 runtime keys |
 | `consumer_public_keys_batch` | LE count + keys[32] → records[99] | Counts 0/1/31/32/33/65/129/257, group sizes 32/64 |
+| `consumer_keccak256` | Input[64] → Keccak-256 digest[32] | 516 cases: known answer, zero/ones/ramp, every single input bit |
+| `consumer_ethereum_address` | Private key[32] → validity + public XY[64] + address[20] | 27 runtime keys, including invalid scalars |
+| `consumer_ethereum_address_batch` | LE count + keys[32] → records[85] | Counts 0/1/31/32/33/65/129/257, group sizes 32/64 |
 
 Invalid scalar/field encodings produce all-zero output. Scalar zero is valid in
 the round-trip probe, but rejected by public-key probes and field inversion.
 Inputs arrive in runtime buffers,
 each invocation checks all result bytes, input preservation, and output guards.
-The batch kernel assigns one independent output record per lane and checks bounds.
+The batch kernels assign one independent output record per lane and check bounds.
+Tests round dispatches up to full threadgroups to exercise excess-lane guards.
+Ethereum fixtures call the same checked address function used by the consumer's
+existing Ethereum mode. They hash the 64 coordinate bytes without the SEC1 tag,
+then select the last 20 digest bytes. CPU known answers cover keys one/two and
+the consumer's existing Ethereum vector; invalid keys zero the complete record.
+These fixtures do not yet exercise Ethereum candidate generation, vanity matching,
+winner publication, or the miner CLI.
 The production public-key path uses ordinary generator multiplication; k256's
 lazy precomputed generator table is not reached, despite the enabled feature.
 Artifacts, including AIR and metallib from the GPU tests, are under
