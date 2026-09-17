@@ -5,7 +5,7 @@ use inkwell::{
     module::{Linkage, Module},
     targets::{TargetData, TargetTriple},
     types::{AnyTypeEnum, BasicTypeEnum},
-    values::InstructionOpcode,
+    values::{AsValueRef, InstructionOpcode},
 };
 use llvm_metal_abi::{Access, Dispatch, KernelInterface, MetalBindings};
 use std::ffi::{CStr, CString};
@@ -178,8 +178,18 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                         instruction.get_opcode()
                     ));
                 }
+                // Preserve private barriers and zeroization accesses. Do not generalize to
+                // device pointers, memory-mapped I/O, or synchronization.
+                unsafe extern "C" {
+                    fn LLVMMetalPrivateMemory(
+                        value: inkwell::llvm_sys::prelude::LLVMValueRef,
+                    ) -> bool;
+                }
+                // SAFETY: the native query only inspects this live instruction.
+                let private_volatile_memory =
+                    unsafe { LLVMMetalPrivateMemory(instruction.as_value_ref()) };
                 if (instruction.get_opcode() == Load || instruction.get_opcode() == Store)
-                    && (instruction.get_volatile().unwrap_or(false)
+                    && ((instruction.get_volatile().unwrap_or(false) && !private_volatile_memory)
                         || instruction
                             .get_atomic_ordering()
                             .map(|x| x != inkwell::AtomicOrdering::NotAtomic)
@@ -297,8 +307,16 @@ pub fn legalize<'ctx>(
 ) -> Result<(Module<'ctx>, MetalBindings), String> {
     input.verify().map_err(|e| e.to_string())?;
     let bindings = interface.validate()?;
-    validate_input(input)?;
     let module = input.clone();
+    unsafe extern "C" {
+        fn LLVMMetalExpandPrivateVolatileCopies(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+    }
+    // SAFETY: verified disposable clone, bounded private copies only.
+    unsafe {
+        LLVMMetalExpandPrivateVolatileCopies(module.as_mut_ptr());
+    }
+    crate::wide::lower(&module)?;
+    validate_input(&module)?;
     let context = module.get_context();
     let implementation = module
         .get_function(&interface.entry)
@@ -337,6 +355,23 @@ pub fn legalize<'ctx>(
             AttributeLoc::Function,
             context.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0),
         );
+        // Rust can also attach noinline to individual calls (e.g. subtle's
+        // volatile barrier). Inlining preserves the volatile access itself.
+        for block in function.get_basic_blocks() {
+            for instruction in block.get_instructions() {
+                if let Ok(call) = inkwell::values::CallSiteValue::try_from(instruction) {
+                    if call
+                        .get_called_fn_value()
+                        .is_some_and(|f| f.count_basic_blocks() != 0)
+                    {
+                        call.remove_enum_attribute(
+                            AttributeLoc::Function,
+                            Attribute::get_named_enum_kind_id("noinline"),
+                        );
+                    }
+                }
+            }
+        }
     }
     let device_pointer = context.ptr_type(AddressSpace::from(1));
     let indexed = module

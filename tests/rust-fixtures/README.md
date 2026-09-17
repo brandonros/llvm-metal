@@ -74,6 +74,54 @@ keeps the steps between scalar operations and a complete crypto kernel visible.
 
 ## Producer and artifacts
 
+### k256 arithmetic probes
+
+`k256/` pins k256 0.13.4, the version used by vanity-miner, with `arithmetic`
+and `expose-field`. Field operations use k256's actual 64-bit implementation.
+Host tests compare field multiplication, squaring and inversion against independent
+`num-bigint` arithmetic modulo p. Point tests include generator/2G and vanity-miner's
+existing public-key known answers.
+
+The `consumer_*` entries call vanity-miner's checked production APIs from an
+explicit local source snapshot. They retain the consumer's k256 features and its
+existing zeroize fork at the commit in the consumer Cargo.lock. That fork disables
+its optional atomic-fence feature; the compiler preserves its volatile writes.
+This does not establish compatibility with crates.io zeroize's inline assembly.
+The checked APIs reject invalid keys; legacy APIs retain their panic-on-invalid
+behavior. Compressed serialization uses k256's public coordinate accessors.
+
+```sh
+nix develop path:.#rust-fixtures --command python3 tests/rust-fixtures/build.py \
+  --fixture k256 --entry k256_field_mul
+nix develop path:.#rust-fixtures --command env \
+  LLVM_METAL_CONSUMER_PATH=/absolute/path/to/vanity-miner-rs-metal cargo test --locked \
+  -p llvm-metal-compiler --test k256 -- --ignored --nocapture --test-threads=1
+```
+
+| Entry | Input/output | GPU corpus |
+|---|---|---|
+| `k256_scalar_roundtrip` | BE scalar[32] → validity[1] + scalar[32] | 27 cases: zero, one/two, n/p boundaries, known key, deterministic random |
+| `wide_mul` | Two LE u64s → exact LE u128 product | 49 products, including maximum/carry cases |
+| `k256_field_mul` | Two canonical BE field elements → validity[1] + normalized product[32] | 729 pairs versus native k256 |
+| `k256_field_square`, `k256_field_invert` | BE field element → validity + normalized result | 27 each, including zero/invalid encodings |
+| `k256_point_double` | Affine x/y[64] → validity + uncompressed point[65] | G, 2G, and three invalid points |
+| `k256_scalar_mul` | Private scalar[32] → validity + compressed[33] + uncompressed[65] | 27 runtime keys |
+| `consumer_public_keys` | Same contract, actual checked production functions | 27 runtime keys |
+| `consumer_public_keys_batch` | LE count + keys[32] → records[99] | Counts 0/1/31/32/33/65/129/257, group sizes 32/64 |
+
+Invalid scalar/field encodings produce all-zero output. Scalar zero is valid in
+the round-trip probe, but rejected by public-key probes and field inversion.
+Inputs arrive in runtime buffers,
+each invocation checks all result bytes, input preservation, and output guards.
+The batch kernel assigns one independent output record per lane and checks bounds.
+The production public-key path uses ordinary generator multiplication; k256's
+lazy precomputed generator table is not reached, despite the enabled feature.
+Artifacts, including AIR and metallib from the GPU tests, are under
+`target/rust-fixtures/k256/<entry>/`. Source/lock/interface hashes and producer
+commands follow the same provenance contract as Shallenge.
+
+### Shared producer
+
 The producer is official stable Rust 1.93.0 with LLVM 21.1.8 and prebuilt
 `nvptx64-nvidia-cuda` libraries. It uses no nightly build-std, Rust-CUDA,
 CUDA toolkit or PTX. The producer script itself stops at LLVM bitcode; compiler
@@ -81,10 +129,15 @@ and runtime tests subsequently establish AIR/GPU correctness.
 
 `build.py` takes archive paths from the current Cargo build, extracts LLVM object
 members (excluding Rust metadata), links them, internalizes other exports and
-runs LLVM O3 with a higher inlining threshold before pruning. It rejects unresolved
+runs LLVM O3 with a higher inlining threshold before pruning. A second O3 pass
+with normal inlining and an unroll threshold of 1000 exposes fixed-size SEC1
+encoding invariants. Device-side Rust/LLVM vectorization is disabled in this
+producer configuration; Metal still performs its own code generation. These are
+correctness fixtures, not tuned performance builds. It rejects unresolved
 runtime symbols. Only the explicitly declared linear index and device fetch-add
 operations are permitted for the batch wrapper. No allocator/panic/runtime stubs
-or patched zeroize are supplied. Passing these fixtures does not establish that
+are supplied. Only explicit local k256 consumer snapshots apply the consumer's
+locked zeroize patch. Passing these fixtures does not establish that
 all vanity-miner dependencies work on stable Rust.
 
 Files live under `target/rust-fixtures/shallenge/`, with named subdirectories for

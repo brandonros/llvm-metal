@@ -5,6 +5,46 @@
 #include <llvm/IR/Metadata.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Transforms/Scalar/InferAddressSpaces.h>
+#include <llvm/Analysis/ValueTracking.h>
+#include <llvm/IR/IntrinsicInst.h>
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/InstIterator.h>
+
+static bool privatePointer(llvm::Value *pointer) {
+    return llvm::isa<llvm::AllocaInst>(llvm::getUnderlyingObject(pointer));
+}
+
+extern "C" bool LLVMMetalPrivateMemory(LLVMValueRef value) {
+    auto *instruction = llvm::unwrap(value);
+    if (auto *load = llvm::dyn_cast<llvm::LoadInst>(instruction))
+        return privatePointer(load->getPointerOperand());
+    if (auto *store = llvm::dyn_cast<llvm::StoreInst>(instruction))
+        return privatePointer(store->getPointerOperand());
+    return false;
+}
+
+// Preserve zeroize's volatile aggregate writes as individual volatile accesses.
+// Only bounded copies entirely between private allocations are admitted.
+extern "C" void LLVMMetalExpandPrivateVolatileCopies(LLVMModuleRef module) {
+    llvm::SmallVector<llvm::MemCpyInst *, 8> copies;
+    for (auto &function : *llvm::unwrap(module))
+        for (auto &instruction : llvm::instructions(function))
+            if (auto *copy = llvm::dyn_cast<llvm::MemCpyInst>(&instruction))
+                if (copy->isVolatile()) copies.push_back(copy);
+    for (auto *copy : copies) {
+        auto *length = llvm::dyn_cast<llvm::ConstantInt>(copy->getLength());
+        if (!length || length->getValue().ugt(256) ||
+            !privatePointer(copy->getSource()) || !privatePointer(copy->getDest())) continue;
+        llvm::IRBuilder<> builder(copy);
+        for (uint64_t i = 0; i < length->getZExtValue(); ++i) {
+            auto *source = builder.CreateGEP(builder.getInt8Ty(), copy->getSource(), builder.getInt64(i));
+            auto *destination = builder.CreateGEP(builder.getInt8Ty(), copy->getDest(), builder.getInt64(i));
+            auto *value = builder.CreateAlignedLoad(builder.getInt8Ty(), source, llvm::Align(1), true);
+            builder.CreateAlignedStore(value, destination, llvm::Align(1), true);
+        }
+        copy->eraseFromParent();
+    }
+}
 
 extern "C" void LLVMMetalInferAddressSpaces(LLVMModuleRef module) {
     llvm::LoopAnalysisManager loops;

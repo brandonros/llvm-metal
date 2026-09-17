@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "entry": "k256_scalar_roundtrip",
+  "calling_convention": "C",
+  "invocations": 1,
+  "aliasing": "disjoint buffers",
+  "arguments": [
+    {
+      "name": "input",
+      "kind": "buffer",
+      "access": "read",
+      "bytes": 32,
+      "alignment": 1
+    },
+    {
+      "name": "output",
+      "kind": "buffer",
+      "access": "write",
+      "bytes": 33,
+      "alignment": 1
+    }
+  ]
+}

@@ -194,6 +194,15 @@ Base58 → match. Compare each boundary before calling the entire candidate.
 Source: `self_test/bitcoin/{secp256k1_probes,layout_probes,base58_probes,mod}.rs`,
 `crypto/{secp256k1,ripemd160}.rs`, `encoding/{bech32,base58}.rs`.
 
+`tests/rust-fixtures/k256` now covers scalar parsing/serialization, wide
+multiplication, field multiplication/squaring/inversion, point doubling and full
+scalar multiplication. Local consumer fixtures exercise the checked production
+public-key APIs in both encodings, including invalid-key handling and batched
+dispatch. The consumer integration retains its locked zeroize fork and volatile
+cleanup. Lazy generator tables are not used by this public-key path. See the
+fixture README for reproducible commands, contracts and CPU/GPU checks. Complete
+Bitcoin/Ethereum candidate kernels and performance tuning remain separate steps.
+
 Separate these branches:
 
 - **k256:** byte/scalar validation → order boundaries → scalar serialization →

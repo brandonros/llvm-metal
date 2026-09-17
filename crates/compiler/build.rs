@@ -1,6 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
 fn main() {
     println!("cargo:rerun-if-changed=native/address_spaces.cpp");
+    println!("cargo:rerun-if-changed=native/wide_integers.cpp");
     println!("cargo:rerun-if-env-changed=LLVM_SYS_211_PREFIX");
     let config = env::var_os("LLVM_SYS_211_PREFIX")
         .map(|p| PathBuf::from(p).join("bin/llvm-config"))
@@ -14,6 +15,7 @@ fn main() {
     cc::Build::new()
         .cpp(true)
         .file("native/address_spaces.cpp")
+        .file("native/wide_integers.cpp")
         .include(include.trim())
         .flag("-std=c++17")
         .flag("-fno-rtti")

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "entry": "consumer_public_keys",
+  "calling_convention": "C",
+  "invocations": 1,
+  "aliasing": "disjoint buffers",
+  "arguments": [
+    {
+      "name": "input",
+      "kind": "buffer",
+      "access": "read",
+      "bytes": 32,
+      "alignment": 1
+    },
+    {
+      "name": "output",
+      "kind": "buffer",
+      "access": "write",
+      "bytes": 99,
+      "alignment": 1
+    }
+  ]
+}

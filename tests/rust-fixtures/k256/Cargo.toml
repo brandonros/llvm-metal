@@ -1,0 +1,31 @@
+[package]
+name = "llvm-metal-fixture-k256"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+resolver = "3"
+
+[features]
+# build.py activates the local consumer only in an explicit source snapshot.
+consumer = []
+
+[dependencies]
+# Same version as vanity-miner. No generator tables are needed by these probes.
+k256 = { version = "=0.13.4", default-features = false, features = ["arithmetic", "expose-field"] }
+
+[dependencies.vanity-logic]
+package = "logic"
+git = "https://github.com/brandonros/vanity-miner-rs"
+rev = "f26605ebddc829dd3d6b5f3f4c3cd6276c14f2de"
+default-features = false
+features = ["bitcoin"]
+optional = true
+
+[dev-dependencies]
+num-bigint = "0.4"
+
+[profile.release]
+panic = "abort"
+codegen-units = 1

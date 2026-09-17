@@ -18,9 +18,23 @@ possible combination; library/pipeline creation remains a separate check.
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
 three-way comparison, nonvolatile memcpy/memset, and removable lifetime/alias
 hints. Unknown externals, inline assembly, indirect calls, mutable globals,
-pointer/integer casts, native LLVM atomics, volatile memory, floating point,
-i128 and NVVM metadata are rejected. No allocator, panic handler, libdevice,
+pointer/integer casts, native LLVM atomics, volatile device memory, floating point,
+and NVVM metadata are rejected. Volatile accesses rooted in private allocas
+are preserved, supporting subtle's local optimization barrier and the consumer's
+zeroize stores. Constant-size volatile memcpy up to 256 bytes between private
+allocas expands to volatile byte loads/stores. This supplies no
+device synchronization or constant-time execution guarantee. No allocator, panic handler, libdevice,
 barrier, threadgroup memory or general GPU runtime is supplied.
+
+A narrow scalar i128 pass lowers zero/sign extension from at most 64 bits,
+addition/subtraction, multiplication, bitwise AND/XOR, comparisons, selection,
+constant left/logical-right/arithmetic-right shifts (0..127), truncation to at
+most 64 bits, and nonvolatile/non-atomic stores into
+pairs of i64 values. Products use 32-bit partial products and explicit carries.
+The pass preserves defined wrapping results and drops optional no-wrap flags.
+Wide loads, division, dynamic shifts, PHIs, vectors, and wide
+function interfaces remain unsupported. Unsupported producers/consumers are
+rejected; input modules are never mutated. Generic i128 support is not claimed.
 
 Two explicit compiler operations are currently defined:
 
@@ -37,7 +51,8 @@ stock Rust atomics/NVPTX intrinsics are not automatically substituted.
 
 Legalization maps buffer pointers to AIR address space 1 and constants to 2,
 using LLVM's address-space inference through a small C++ bridge. It removes
-source PIC/PIE code-generation flags and scoped alias/lifetime hints. Other
+source PIC/PIE code-generation flags and scoped alias/lifetime hints. Function
+and call-site noinline hints are removed to inline defined helpers. Other
 language semantics are preserved; no fixture name triggers a special lowering.
 The compiler emits AIR 2.4/Metal 3.0 metadata and resource limits. The pinned
 LLVM-21-compatible llvm-downgrade writes bitcode version 14; native LLVM verifies
