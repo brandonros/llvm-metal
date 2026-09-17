@@ -111,6 +111,10 @@ nix develop path:.#rust-fixtures --command env \
 | `consumer_keccak256` | Input[64] → Keccak-256 digest[32] | 516 cases: known answer, zero/ones/ramp, every single input bit |
 | `consumer_ethereum_address` | Private key[32] → validity + public XY[64] + address[20] | 27 runtime keys, including invalid scalars |
 | `consumer_ethereum_address_batch` | LE count + keys[32] → records[85] | Counts 0/1/31/32/33/65/129/257, group sizes 32/64 |
+| `consumer_bitcoin_ripemd160` | Input[32] → RIPEMD-160 digest[20] | 259 cases: zero/ones/ramp and every single input bit |
+| `consumer_bitcoin_hash160` | Compressed key bytes[33] → SHA-256[32] + HASH160[20] | 267 cases; hashing does not validate SEC1 encoding |
+| `consumer_bitcoin_bech32` | HASH160[20] → length[1] + padded address[64] | 163 cases; mainnet P2WPKH (`bc1q…`) |
+| `consumer_bitcoin_address` | Private key[32] → validity + public key[33] + HASH160[20] + length + address[64] | 27 runtime keys, including invalid scalars |
 
 Invalid scalar/field encodings produce all-zero output. Scalar zero is valid in
 the round-trip probe, but rejected by public-key probes and field inversion.
@@ -122,8 +126,13 @@ Ethereum fixtures call the same checked address function used by the consumer's
 existing Ethereum mode. They hash the 64 coordinate bytes without the SEC1 tag,
 then select the last 20 digest bytes. CPU known answers cover keys one/two and
 the consumer's existing Ethereum vector; invalid keys zero the complete record.
-These fixtures do not yet exercise Ethereum candidate generation, vanity matching,
-winner publication, or the miner CLI.
+Bitcoin leaf fixtures compare the consumer's hashes against RustCrypto `sha2`
+and `ripemd`, and its address encoder against the independent `bech32` crate.
+The complete address fixture calls the checked production helper, preserves
+zero padding, and returns all zeros for invalid private keys. Host known answers
+include the consumer's existing Bitcoin vector. The fixture harness does not
+exercise candidate matching or winner publication; those belong to the miner's
+separate Metal application tests.
 The production public-key path uses ordinary generator multiplication; k256's
 lazy precomputed generator table is not reached, despite the enabled feature.
 Artifacts, including AIR and metallib from the GPU tests, are under

@@ -200,8 +200,24 @@ scalar multiplication. Local consumer fixtures exercise the checked production
 public-key APIs in both encodings, including invalid-key handling and batched
 dispatch. The consumer integration retains its locked zeroize fork and volatile
 cleanup. Lazy generator tables are not used by this public-key path. See the
-fixture README for reproducible commands, contracts and CPU/GPU checks. Complete
-Bitcoin/Ethereum candidate kernels and performance tuning remain separate steps.
+fixture README for reproducible commands, contracts and CPU/GPU checks.
+
+Bitcoin now also has separate production RIPEMD-160, HASH160, Bech32 P2WPKH and
+complete checked-address fixtures: 716 guarded CPU/GPU comparisons on Apple M5.
+Host leaf tests use independent RustCrypto hashes and the `bech32` encoder;
+complete-address tests retain the consumer's known vector and invalid-key cases.
+These required no new AIR lowering. The unchanged stock-LLVM producer's second
+O3 pass takes several minutes on the Bech32 composition; compile-time tuning
+remains open. See 2.7 for the Ethereum application milestone.
+
+The isolated consumer Metal branch also runs the production Bitcoin candidate
+kernel and CLI. Tests compare all lanes across partial grids, seed widths and
+counter boundaries; check matching, misses, atomic counts and winner payloads;
+and reject malformed requests. CLI tests cover bounded searches and CPU-verified
+address/WIF output. WIF remains host-side. Use the explicit local compiler
+override documented in the consumer README until these commits are published.
+This establishes mainnet P2WPKH correctness, not other Bitcoin address modes or
+measured mining throughput.
 
 Separate these branches:
 

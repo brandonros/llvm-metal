@@ -15,6 +15,21 @@ fn be(hex: &str) -> Vec<u8> {
 }
 
 fn cases(entry: &str) -> Vec<Vec<u8>> {
+    let width = match entry {
+        "consumer_bitcoin_ripemd160" => Some(32),
+        "consumer_bitcoin_hash160" => Some(33),
+        "consumer_bitcoin_bech32" => Some(20),
+        _ => None,
+    };
+    if let Some(n) = width {
+        let mut inputs = vec![vec![0; n], vec![255; n], (0..n as u8).collect()];
+        for bit in 0..n * 8 {
+            let mut bytes = vec![0; n];
+            bytes[bit / 8] = 1 << (bit % 8);
+            inputs.push(bytes);
+        }
+        return inputs;
+    }
     if entry == "consumer_keccak256" {
         let half = be("61a314b0183724ea0e5f237584cb76092e253b99783d846a5b10db155128eafd");
         let mut inputs = vec![
@@ -287,6 +302,30 @@ fn consumer_ethereum_address() {
 #[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
 fn consumer_ethereum_address_batches() {
     check_batches("consumer_ethereum_address", 85);
+}
+
+#[test]
+#[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
+fn consumer_bitcoin_ripemd160() {
+    check("consumer_bitcoin_ripemd160");
+}
+
+#[test]
+#[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
+fn consumer_bitcoin_hash160() {
+    check("consumer_bitcoin_hash160");
+}
+
+#[test]
+#[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
+fn consumer_bitcoin_bech32() {
+    check("consumer_bitcoin_bech32");
+}
+
+#[test]
+#[ignore = "requires Apple GPU, .#rust-fixtures, and LLVM_METAL_CONSUMER_PATH"]
+fn consumer_bitcoin_address() {
+    check("consumer_bitcoin_address");
 }
 
 fn check_batches(entry: &str, record_size: usize) {

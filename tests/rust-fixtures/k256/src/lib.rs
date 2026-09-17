@@ -6,6 +6,10 @@ use k256::{FieldElement, Scalar, elliptic_curve::PrimeField};
 mod consumer;
 #[cfg(feature = "consumer")]
 pub use consumer::*;
+#[cfg(feature = "consumer")]
+mod bitcoin;
+#[cfg(feature = "consumer")]
+pub use bitcoin::*;
 
 unsafe fn read<const N: usize>(input: *const u8) -> [u8; N] {
     unsafe { input.cast::<[u8; N]>().read_unaligned() }
@@ -136,6 +140,14 @@ pub fn probe(entry: &str) -> Option<(usize, usize, Probe)> {
         "consumer_keccak256" => Some((64, 32, consumer_keccak256)),
         #[cfg(feature = "consumer")]
         "consumer_ethereum_address" => Some((32, 85, consumer_ethereum_address)),
+        #[cfg(feature = "consumer")]
+        "consumer_bitcoin_ripemd160" => Some((32, 20, consumer_bitcoin_ripemd160)),
+        #[cfg(feature = "consumer")]
+        "consumer_bitcoin_hash160" => Some((33, 52, consumer_bitcoin_hash160)),
+        #[cfg(feature = "consumer")]
+        "consumer_bitcoin_bech32" => Some((20, 65, consumer_bitcoin_bech32)),
+        #[cfg(feature = "consumer")]
+        "consumer_bitcoin_address" => Some((32, 119, consumer_bitcoin_address)),
         _ => None,
     }
 }

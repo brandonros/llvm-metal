@@ -1,9 +1,9 @@
 # llvm-metal
 Compile LLVM bitcode into Metal libraries for Apple GPUs.
 
-The initial integer/buffer pipeline runs real Rust Shallenge routines on an
-Apple M5: SHA-256, nonce generation, candidate checking, and indexed batches
-with atomic match counts and winner indices. This is an experimental compiler
+The integer/buffer pipeline runs real Rust Shallenge, Ethereum and Bitcoin routines
+on an Apple M5, including candidate checking and indexed batches with atomic
+match counts and winner indices. This is an experimental compiler
 profile, not general CUDA compatibility or a performance-tested miner backend.
 
 ```text
@@ -64,5 +64,5 @@ throughput and other Apple GPU/OS combinations have not been measured.
 The [fixture guide](tests/rust-fixtures/README.md) explains pinned dependencies,
 source hashes and local SHA diagnostics. Keep small source fixtures in Git and
 generate ordinary bitcode under `target/`. The [phase-2 plan](docs/phase-2.md)
-tracks the remaining crypto progression; wide integer arithmetic, elliptic
-curves and RSA are still future work.
+tracks the crypto progression. The implemented k256 path includes wide integer
+arithmetic and secp256k1; other curves and RSA remain future work.
