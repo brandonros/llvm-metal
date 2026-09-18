@@ -1,4 +1,5 @@
-// Promote SROA's byte-sized non-machine integers without changing memory spans.
+// Promote non-machine scalar integers without changing memory spans.
+// i2..i7 are register-only and promote to i32; their storage is refused.
 // i24 -> i32; i40/i48/i56 -> i64. Every promoted value is zero-extended from
 // its original width. Signed operations explicitly sign-extend that width.
 #include <llvm-c/Core.h>
@@ -15,7 +16,7 @@ static bool odd(Type *type) {
     auto *integer = dyn_cast<IntegerType>(type);
     if (!integer) return false;
     unsigned width = integer->getBitWidth();
-    return width == 24 || width == 40 || width == 48 || width == 56;
+    return (width >= 2 && width <= 7) || width == 24 || width == 40 || width == 48 || width == 56;
 }
 static bool containsOdd(Type *type) {
     if (odd(type)) return true;
@@ -49,7 +50,7 @@ struct Lower {
     }
     IntegerType *promoted(Type *type) {
         unsigned width = type->getIntegerBitWidth();
-        return IntegerType::get(type->getContext(), width == 24 ? 32 : 64);
+        return IntegerType::get(type->getContext(), width <= 24 ? 32 : 64);
     }
     Value *mask(IRBuilder<> &builder, Value *value, unsigned width) {
         auto bits = value->getType()->getIntegerBitWidth();
@@ -74,7 +75,7 @@ struct Lower {
     Value *get(Value *value) {
         auto cached = values.find(value);
         if (cached != values.end()) return cached->second;
-        if (!odd(value->getType())) return fail(value, "expected scalar byte width");
+        if (!odd(value->getType())) return fail(value, "expected supported scalar width");
         unsigned width = value->getType()->getIntegerBitWidth();
         auto *type = promoted(value->getType());
         if (auto *constant = dyn_cast<ConstantInt>(value))
@@ -99,6 +100,7 @@ struct Lower {
         }
         Value *result = nullptr;
         if (auto *load = dyn_cast<LoadInst>(instruction)) {
+            if (width < 8) return fail(load, "sub-byte load storage");
             if (load->isAtomic() || load->isVolatile()) return fail(load, "atomic or volatile access");
             result = ConstantInt::get(type, 0);
             for (unsigned byte = 0; byte < width / 8; ++byte) {
@@ -186,12 +188,21 @@ struct Lower {
                     if (containsOdd(allocation->getAllocatedType())) { fail(allocation, "odd stack storage"); return false; }
                 if (auto *gep = dyn_cast<GetElementPtrInst>(&instruction))
                     if (containsOdd(gep->getSourceElementType())) { fail(gep, "odd GEP element storage"); return false; }
+                if (auto *load = dyn_cast<LoadInst>(&instruction))
+                    if (odd(load->getType()) && load->getType()->getIntegerBitWidth() < 8) {
+                        fail(load, "sub-byte load storage"); return false;
+                    }
+                if (auto *store = dyn_cast<StoreInst>(&instruction))
+                    if (odd(store->getValueOperand()->getType()) && store->getValueOperand()->getType()->getIntegerBitWidth() < 8) {
+                        fail(store, "sub-byte store storage"); return false;
+                    }
                 auto checkType = [&](Type *type) {
                     if (containsOdd(type) && !odd(type)) {
                         fail(&instruction, "odd vector or aggregate"); return false;
                     }
                     if (!odd(type)) return true;
                     unsigned width = type->getIntegerBitWidth();
+                    if (width < 8) return true; // Register-only: no storage layout is changed.
                     unsigned allocation = width == 24 ? 4 : 8;
                     if (!layout.isLittleEndian() || layout.getTypeAllocSize(type) != allocation || layout.getABITypeAlign(type) != Align(allocation)) {
                         fail(&instruction, "NVPTX/AIR layout mismatch"); return false;

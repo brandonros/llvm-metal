@@ -77,6 +77,11 @@ validation and after optimization. Odd-width storage types, globals, function
 ABIs, vectors, atomics and volatile operations remain outside this profile.
 CPU LLVM execution and guarded GPU tests cover arithmetic, comparisons, shifts,
 PHIs and conversions. Apple does not natively support the tested i24 operation.
+Register-only i2 through i7 values also promote to i32 with the same masking and
+signed-operation rules. Loads, stores, aggregate storage and function ABIs using
+these sub-byte types are rejected. Exhaustive CPU comparisons against the original
+LLVM and Rust cover every operand pair at each width, including the i6 SEC1 tag
+bitset. Guarded GPU tests cover 1,008 operand pairs across these widths.
 
 Dynamic nonvolatile `memcpy` and `memset` lower after optimization to two
 stride-two byte loops and an optional final byte. Zero-length operations access
