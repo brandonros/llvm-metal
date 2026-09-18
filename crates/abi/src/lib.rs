@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+pub mod descriptor;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -23,7 +24,7 @@ pub struct BufferArgument {
     pub alignment: usize,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Access {
     Read,
@@ -39,14 +40,16 @@ pub enum Dispatch {
     Grid1d,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MetalBindings {
     pub entry: String,
     pub dispatch: Dispatch,
     pub buffers: Vec<MetalBufferBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<descriptor::Descriptor>,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
 pub struct MetalBufferBinding {
     pub argument: usize,
     pub index: usize,
@@ -86,6 +89,7 @@ impl KernelInterface {
             }
         }
         Ok(MetalBindings {
+            descriptor: None,
             entry: self.entry.clone(),
             dispatch: self.dispatch,
             buffers: self
@@ -101,5 +105,16 @@ impl KernelInterface {
                 })
                 .collect(),
         })
+    }
+}
+
+impl MetalBindings {
+    /// Compare all target-evaluated fields and the generated Metal argument map.
+    pub fn validate_host_descriptor(&self, expected: &[u8]) -> Result<(), String> {
+        let expected = descriptor::Descriptor::decode(expected)?.bindings()?;
+        if *self != expected {
+            return Err("Metal host/device descriptor or binding mismatch".into());
+        }
+        Ok(())
     }
 }

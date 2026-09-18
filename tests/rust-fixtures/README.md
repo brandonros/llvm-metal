@@ -1,5 +1,15 @@
 # Rust integration fixtures
 
+`descriptor.rs` proves the typed declaration path without a handwritten interface.
+The test independently compiles its declaration for the native host and NVPTX,
+extracts the device constant, rejects incompatible bindings, and compares runtime
+inputs/outputs and guards on Metal, including empty and varying-length slices:
+
+```sh
+nix develop path:.#rust-fixtures --command cargo test --locked \
+  -p llvm-metal-compiler --test descriptor -- --include-ignored --nocapture
+```
+
 `shallenge/` is an independent Cargo workspace depending on vanity-miner's
 `logic` crate at `f26605ebddc829dd3d6b5f3f4c3cd6276c14f2de`, with only the
 `shallenge` feature enabled by default. The compiler has no vanity-miner dependency.
