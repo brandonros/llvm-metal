@@ -117,3 +117,72 @@ fn prime_filter_matches_known_primes_and_composites() {
         assert_eq!(result, [u8::from(expected)]);
     }
 }
+
+#[test]
+fn candidate_api_has_fixed_match_miss_error_and_no_retained_cursor() {
+    use llvm_metal_fixture_rsa::{
+        factors::{P, Q},
+        search_corpus,
+    };
+    use vanity_logic::search::candidate_result::CandidateResult;
+    for entry in [
+        "consumer_rsa_sample_q",
+        "consumer_rsa_eligible_pair",
+        "consumer_rsa_candidate",
+    ] {
+        let (input_size, output_size, function) = probe(entry).unwrap();
+        let mut outputs = Vec::new();
+        for input in search_corpus::cases(entry).unwrap() {
+            assert_eq!(input.len(), input_size);
+            let mut out = vec![0xa5; output_size];
+            // SAFETY: exact-sized disjoint byte buffers from the declared interface.
+            unsafe { function(input.as_ptr(), out.as_mut_ptr()) };
+            outputs.push(out);
+        }
+        match entry {
+            "consumer_rsa_sample_q" => {
+                assert_eq!(outputs[0], [vec![1], Q.to_vec()].concat());
+                assert_eq!(outputs[outputs.len() - 2], vec![0; 129]); // Equal factors excluded.
+                assert_eq!(outputs[outputs.len() - 1], vec![0; 129]); // Inverted interval.
+            }
+            "consumer_rsa_eligible_pair" => {
+                assert_eq!(
+                    outputs,
+                    vec![vec![1], vec![0], vec![0], vec![0], vec![0], vec![0]]
+                );
+            }
+            _ => {
+                let expected = [
+                    CandidateResult::STATUS_MATCH.to_le_bytes().to_vec(),
+                    P.to_vec(),
+                    Q.to_vec(),
+                ]
+                .concat();
+                for out in &outputs[..4] {
+                    assert_eq!(*out, expected);
+                }
+                assert_eq!(
+                    outputs[4],
+                    [
+                        CandidateResult::STATUS_MISS.to_le_bytes().to_vec(),
+                        vec![0; 256]
+                    ]
+                    .concat()
+                );
+                for out in &outputs[5..] {
+                    assert_eq!(
+                        *out,
+                        [
+                            CandidateResult::STATUS_ERROR.to_le_bytes().to_vec(),
+                            vec![0; 256]
+                        ]
+                        .concat()
+                    );
+                }
+                let product = be(&P) * be(&Q);
+                assert_eq!(product.bits(), 2048);
+                assert_eq!(bytes(product, 256), search_corpus::config().lower);
+            }
+        }
+    }
+}

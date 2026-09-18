@@ -94,6 +94,10 @@ def main():
     local_vendor_hashes = None
     if options.consumer_path:
         consumer = options.consumer_path.resolve() / "crates/logic"
+        if options.fixture in ("rsa", "solana"):
+            features = tomllib.loads((consumer / "Cargo.toml").read_text()).get("features", {})
+            if "test-vectors" not in features:
+                raise RuntimeError("RSA/Solana consumer fixtures require logic's test-vectors feature; select a compatible consumer revision from tests/rust-fixtures/README.md")
         source_fixture = output / "local-source/fixture"
         snapshot = output / "local-source/logic"
         if (output / "local-source").exists():
@@ -115,6 +119,8 @@ def main():
         lines = [f"path = {json.dumps(str(snapshot))}" if line.startswith("git = ") else line for line in lines]
         lines = ['compiler-probes = ["vanity-logic/compiler-probes"]' if line == "compiler-probes = []" else line for line in lines]
         lines = ['consumer = ["dep:vanity-logic"]' if line == "consumer = []" else line for line in lines]
+        if options.fixture in ("rsa", "solana"):
+            lines = [line.replace('["dep:vanity-logic"]', '["dep:vanity-logic", "vanity-logic/test-vectors"]') if line.startswith("consumer = ") else line for line in lines]
         manifest.write_text("\n".join(lines) + "\n")
         if options.fixture in ("k256", "solana", "rsa"):
             # Match the consumer's existing zeroize fork at its locked commit,

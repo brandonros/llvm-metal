@@ -214,17 +214,18 @@ pub fn probe(entry: &str) -> Option<(usize, usize, Probe)> {
         #[cfg(feature = "consumer")]
         "consumer_rsa_progression" => Some((1200, 257, search::consumer_rsa_progression)),
         #[cfg(feature = "consumer")]
-        "consumer_rsa_prepare" => Some((1984, 913, search::consumer_rsa_prepare)),
+        "consumer_rsa_sample_q" => Some((1208, 129, search::consumer_rsa_sample_q)),
         #[cfg(feature = "consumer")]
-        "consumer_rsa_advance" => Some((1992, 1041, search::consumer_rsa_advance)),
+        "consumer_rsa_eligible_pair" => Some((772, 1, search::consumer_rsa_eligible_pair)),
         #[cfg(feature = "consumer")]
-        "consumer_rsa_mine" => Some((2516, 1209, search::consumer_rsa_mine)),
+        "consumer_rsa_candidate" => Some((1596, 260, search::consumer_rsa_candidate)),
         _ => None,
     }
 }
 
-#[cfg(not(target_arch = "nvptx64"))]
+#[cfg(all(feature = "consumer", not(target_arch = "nvptx64")))]
 pub mod corpus;
+#[cfg(feature = "consumer")]
 pub mod factors;
 
 #[cfg(feature = "consumer")]

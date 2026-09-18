@@ -1,15 +1,8 @@
 #![cfg(feature = "consumer")]
-use llvm_metal_fixture_rsa::{
-    factors::{P, Q},
-    probe,
-    search_corpus::{bytes, cases},
-};
+use llvm_metal_fixture_rsa::{probe, search_corpus::cases};
 use num_bigint::BigUint;
 use sha2::{Digest, Sha256};
-use vanity_logic::{
-    modes::rsa_modulus::{Counts, Pair, SearchConfig, Task},
-    search::device_record::DeviceRecord,
-};
+use vanity_logic::{modes::rsa_modulus::SearchConfig, search::device_record::DeviceRecord};
 fn be(b: &[u8]) -> BigUint {
     BigUint::from_bytes_be(b)
 }
@@ -136,14 +129,14 @@ fn candidate_prf_and_range_match_independent_arithmetic() {
     }
 }
 #[test]
-fn prepare_and_cursor_match_independent_progression() {
+fn sampled_q_matches_independent_progression_and_hmac() {
     let one = BigUint::from(1u8);
     let zero = BigUint::from(0u8);
-    for input in cases("consumer_rsa_prepare").unwrap() {
+    for input in cases("consumer_rsa_sample_q").unwrap() {
         let c: SearchConfig = decode(&input);
-        let mut task: Task = decode(&input[1072..]);
-        let p = be(&task.p);
-        let mut status = 0;
+        let p = be(&input[1072..1200]);
+        let id = u64::from_le_bytes(input[1200..].try_into().unwrap());
+        let mut expected = vec![0; 129];
         if let Some((first, total)) = progression(&c, &p) {
             let distance = &one << 924usize;
             let stride = &one << c.suffix_bits as usize;
@@ -154,8 +147,7 @@ fn prepare_and_cursor_match_independent_progression() {
                 let begin = (&low - &first + &stride - &one) / &stride;
                 let end = (&high - &first) / &stride;
                 if begin <= end {
-                    let count = &end - &begin + &one;
-                    (begin, count)
+                    (begin.clone(), &end - &begin + &one)
                 } else {
                     (zero.clone(), zero.clone())
                 }
@@ -164,101 +156,15 @@ fn prepare_and_cursor_match_independent_progression() {
             };
             let eligible = &total - &skip_count;
             if eligible != zero {
-                let cursor = sample(&c, task.id, b"rsa-range-start", &eligible).unwrap();
-                task.first = fixed(&first);
-                task.count = fixed(&eligible);
-                task.remaining = task.count;
-                task.skip_start = fixed(&skip_start);
-                task.skip_count = fixed(&skip_count);
-                task.cursor = fixed(&cursor);
-                task.state = 2;
-                task.winner = 0;
-                status = 1;
+                let mut index = sample(&c, id, b"rsa-range-start", &eligible).unwrap();
+                if index >= skip_start {
+                    index += skip_count;
+                }
+                let q = &first + index * stride;
+                assert_eq!(q.bits(), 1024);
+                expected = [vec![1], fixed::<128>(&q).to_vec()].concat();
             }
         }
-        if status == 0 {
-            task = Task::EMPTY;
-        }
-        assert_eq!(
-            run("consumer_rsa_prepare", &input),
-            [vec![status], bytes(&task)].concat()
-        );
-    }
-    for input in cases("consumer_rsa_advance").unwrap() {
-        let c: SearchConfig = decode(&input);
-        let mut t: Task = decode(&input[1072..]);
-        let offset = BigUint::from(u32::from_le_bytes(input[1984..1988].try_into().unwrap()));
-        let assigned = BigUint::from(u32::from_le_bytes(input[1988..].try_into().unwrap()));
-        let remaining = be(&t.remaining);
-        let count = be(&t.count);
-        let cursor = be(&t.cursor);
-        let q = if t.state == 2 && offset < remaining {
-            let mut i = (&cursor + offset) % &count;
-            if i >= be(&t.skip_start) {
-                i += be(&t.skip_count);
-            }
-            Some(be(&t.first) + (i << c.suffix_bits as usize)).filter(|q| q.bits() == 1024)
-        } else {
-            None
-        };
-        let used = assigned.min(remaining.clone());
-        if t.winner != 0 || used == remaining {
-            t = Task::EMPTY;
-        } else {
-            t.cursor = fixed(&((&cursor + &used) % count));
-            t.remaining = fixed(&(remaining - used));
-        }
-        let mut expected = vec![u8::from(q.is_some())];
-        expected.extend(fixed::<128>(&q.unwrap_or(zero.clone())));
-        expected.extend(bytes(&t));
-        assert_eq!(run("consumer_rsa_advance", &input), expected);
-    }
-}
-#[test]
-fn known_pair_is_prepared_resumed_matched_and_retired() {
-    let entry = "consumer_rsa_mine";
-    for (index, input) in cases(entry).unwrap().iter().enumerate() {
-        let output = run(entry, input);
-        let counts: Counts = decode(&output);
-        let task: Task = decode(&output[32..]);
-        let pair: Pair = decode(&output[945..]);
-        match index {
-            0 => {
-                assert_eq!(
-                    counts,
-                    Counts {
-                        p_tested: 1,
-                        p_accepted: 1,
-                        ranges: 1,
-                        ..Counts::default()
-                    }
-                );
-                assert_eq!(task.state, 2);
-                assert_eq!(task.first, Q);
-                assert_eq!(be(&task.remaining), BigUint::from(1u8));
-                assert_eq!(output[944], 0);
-            }
-            1 | 2 => {
-                assert_eq!(counts.q_tested, 1);
-                assert_eq!(counts.matches, 1);
-                assert_eq!(counts.active, 1);
-                assert_eq!(output[944], 1);
-                assert!(task == Task::EMPTY);
-                assert_eq!(pair.p, P);
-                assert_eq!(pair.q, Q);
-                assert_eq!(pair.id, if index == 1 { 7 } else { 17 });
-            }
-            3 => {
-                assert_eq!(counts.q_tested, 1);
-                assert_eq!(counts.matches, 0);
-                assert_eq!(output[944], 0);
-                assert!(task == Task::EMPTY);
-            }
-            _ => {
-                assert_eq!(counts.errors, 1);
-                assert_eq!(output[944], 0);
-                assert!(task == Task::EMPTY);
-            }
-        }
+        assert_eq!(run("consumer_rsa_sample_q", &input), expected);
     }
 }

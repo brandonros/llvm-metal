@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "entry": "consumer_rsa_mine",
+  "entry": "consumer_rsa_candidate",
   "calling_convention": "C",
   "invocations": 1,
   "aliasing": "disjoint buffers",
@@ -9,14 +9,14 @@
       "name": "input",
       "kind": "buffer",
       "access": "read",
-      "bytes": 2516,
+      "bytes": 1596,
       "alignment": 1
     },
     {
       "name": "output",
       "kind": "buffer",
       "access": "write",
-      "bytes": 1209,
+      "bytes": 260,
       "alignment": 1
     }
   ]

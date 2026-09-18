@@ -28,3 +28,8 @@ num-bigint = "0.4"
 [profile.release]
 panic = "abort"
 codegen-units = 1
+
+[[bin]]
+name = "oracle"
+path = "src/bin/oracle.rs"
+required-features = ["consumer"]

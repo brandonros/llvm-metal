@@ -90,13 +90,13 @@ fn rfc8032_and_consumer_known_answers() {
     ] {
         assert_eq!(run("public_key", &hex(secret)), hex(public));
     }
-    let secret = hex("fa9ce9b02dc28a48f7e9d15506d3d2c443d596565fa05214b0ff7c5ab5e7956b");
+    let secret = vanity_logic::test_vectors::SOLANA_PRIMITIVE_PRIV;
     let result = run("address", &secret);
     assert_eq!(
         &result[..32],
-        hex("089a23ffc422f53d114587012bb2c028492fabdabe1266bc9ad6698ac43016bb")
+        vanity_logic::test_vectors::SOLANA_PRIMITIVE_PUB
     );
-    let address = b"aaatgciWHhvVra6u4znVSfSqqJszUcpDDFEEKrPjNFC";
+    let address = vanity_logic::test_vectors::SOLANA_ADDRESS.as_bytes();
     assert_eq!(result[32] as usize, address.len());
     assert_eq!(&result[33..33 + address.len()], address);
     let mut one = [0; 32];

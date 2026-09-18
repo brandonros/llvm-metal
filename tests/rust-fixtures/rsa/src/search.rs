@@ -1,6 +1,6 @@
-//! Small interfaces around the actual resumable miner, before its grid wrapper.
+//! Runtime-input interfaces around independent RSA candidates, before grid dispatch.
 use vanity_logic::{
-    modes::rsa_modulus::{self as rsa, Pair, SearchConfig, Task},
+    modes::rsa_modulus::{self as rsa, Pair, SearchConfig},
     search::{device_record::DeviceRecord, hex_pattern::HexPattern},
 };
 unsafe fn read<T: DeviceRecord>(p: *const u8) -> T {
@@ -39,55 +39,41 @@ pub unsafe extern "C" fn consumer_rsa_progression(input: *const u8, output: *mut
     }
 }
 /// # Safety
-/// Disjoint readable input[1984] and writable output[913].
+/// Disjoint readable input[1208] and writable output[129].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn consumer_rsa_prepare(input: *const u8, output: *mut u8) {
+pub unsafe extern "C" fn consumer_rsa_sample_q(input: *const u8, output: *mut u8) {
     unsafe {
         let config: SearchConfig = read(input);
-        let mut task: Task = read(input.add(1072));
-        let status = match rsa::prepare_range(&config, &mut task) {
-            Ok(false) => 0,
-            Ok(true) => 1,
-            Err(_) => 2,
+        let p = input.add(1072).cast::<[u8; 128]>().read_unaligned();
+        let id = input.add(1200).cast::<u64>().read_unaligned();
+        let (status, q) = match rsa::generate_q(&config, &p, id) {
+            Ok(Some(q)) => (1, q),
+            Ok(None) => (0, [0; 128]),
+            Err(_) => (2, [0; 128]),
         };
         output.write(status);
-        write(output.add(1), task);
+        output.add(1).cast::<[u8; 128]>().write_unaligned(q);
     }
 }
 /// # Safety
-/// Disjoint readable input[1992] and writable output[1041].
+/// Disjoint readable input[772] and writable output[1].
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn consumer_rsa_advance(input: *const u8, output: *mut u8) {
+pub unsafe extern "C" fn consumer_rsa_eligible_pair(input: *const u8, output: *mut u8) {
     unsafe {
-        let config: SearchConfig = read(input);
-        let mut task: Task = read(input.add(1072));
-        let offset = input.add(1984).cast::<u32>().read_unaligned();
-        let assigned = input.add(1988).cast::<u32>().read_unaligned();
-        let q = rsa::q_at(&config, &task, offset);
-        output.write(u8::from(q.is_some()));
-        output
-            .add(1)
-            .cast::<[u8; 128]>()
-            .write_unaligned(q.unwrap_or([0; 128]));
-        rsa::finish_tile(&mut task, assigned);
-        write(output.add(129), task);
+        let p = input.cast::<[u8; 128]>().read_unaligned();
+        let q = input.add(128).cast::<[u8; 128]>().read_unaligned();
+        let pattern: HexPattern = read(input.add(256));
+        output.write(u8::from(rsa::eligible_pair(&p, &q, &pattern)));
     }
 }
 /// # Safety
-/// Disjoint readable input[2516] and writable output[1209].
+/// Disjoint readable input[1596] and writable output[260]. No state survives calls.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn consumer_rsa_mine(input: *const u8, output: *mut u8) {
+pub unsafe extern "C" fn consumer_rsa_candidate(input: *const u8, output: *mut u8) {
     unsafe {
         let config: SearchConfig = read(input);
         let pattern: HexPattern = read(input.add(1072));
-        let mut task: Task = read(input.add(1588));
-        let start = input.add(2500).cast::<u64>().read_unaligned();
-        let stride = input.add(2508).cast::<u32>().read_unaligned();
-        let steps = input.add(2512).cast::<u32>().read_unaligned();
-        let (counts, pair) = rsa::mine(&config, &pattern, &mut task, start, stride, steps);
-        write(output, counts);
-        write(output.add(32), task);
-        output.add(944).write(u8::from(pair.is_some()));
-        write(output.add(945), pair.unwrap_or(Pair::EMPTY));
+        let id = input.add(1588).cast::<u64>().read_unaligned();
+        write(output, rsa::rsa_modulus(&config, id, &pattern));
     }
 }
