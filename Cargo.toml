@@ -8,4 +8,10 @@ rust-version = "1.85"
 repository = "https://github.com/brandonros/llvm-metal"
 
 [workspace.dependencies]
-inkwell = { version = "=0.10.0", default-features = false, features = ["llvm21-1-prefer-dynamic", "target-aarch64", "target-x86"] }
+inkwell = { git = "https://github.com/brandonros/inkwell", rev = "d0a07a79625f5ac705e7daab4d9c8eb81016300e", version = "=0.10.0", default-features = false, features = ["llvm21-1-prefer-dynamic", "target-aarch64", "target-x86"] }
+
+[patch.crates-io]
+# Keep Inkwell's LLVM 21 binding on our fork, at the existing 211.1.0 release.
+# Dependency patches belong to this workspace root; downstream workspaces must
+# repeat this patch only if they actually depend on the compiler/bindings.
+llvm-sys = { git = "https://github.com/brandonros/llvm-sys.rs", rev = "3bcf54fe817488d7ea8723abbe9fcc4524ceb257", version = "=211.1.0" }
