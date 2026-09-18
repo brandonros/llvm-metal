@@ -426,3 +426,48 @@ fn byval_interfaces_inline_before_pointer_specialization() {
     assert!(air.get_function("read.metal.1").is_none());
     assert!(air.get_function("nested_read.metal.1").is_some());
 }
+
+#[test]
+fn public_api_and_cli_default_to_retention_with_full_inlining_opt_out() {
+    let context = Context::create();
+    let input = parse_ir(&context, pointer_source().as_bytes(), "default-policy").unwrap();
+    let artifact = llvm_metal_compiler::compile::compile(&input, &interface()).unwrap();
+    let decoded =
+        llvm_metal_compiler::parse_bitcode(&context, &artifact.air_bitcode, "default-air").unwrap();
+    assert!(decoded.get_function("nested_read.metal.1").is_some());
+    let directory = tempfile::tempdir().unwrap();
+    let source = directory.path().join("input.ll");
+    let contract = directory.path().join("interface.json");
+    std::fs::write(&source, pointer_source()).unwrap();
+    std::fs::write(&contract, serde_json::to_vec(&interface()).unwrap()).unwrap();
+    for all in [false, true] {
+        let output = directory.path().join(if all { "all" } else { "default" });
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_llvm-metalc"));
+        command
+            .arg("compile")
+            .arg(&source)
+            .arg("--interface")
+            .arg(&contract)
+            .arg("--output")
+            .arg(&output);
+        if all {
+            command.args(["--inlining", "all"]);
+        }
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        let bytes = std::fs::read(output.join("kernel.air.bc")).unwrap();
+        let module = llvm_metal_compiler::parse_bitcode(&context, &bytes, "cli-air").unwrap();
+        assert_eq!(
+            module
+                .get_functions()
+                .filter(|f| f.count_basic_blocks() != 0)
+                .count()
+                > 1,
+            !all
+        );
+    }
+}

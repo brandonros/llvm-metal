@@ -6,7 +6,7 @@ const USAGE: &str = "Usage: llvm-metalc inspect <input.ll|input.bc> --entry <fun
 
 fn main() -> ExitCode {
     let mut args: Vec<_> = env::args_os().skip(1).collect();
-    let mut policy = llvm_metal_compiler::air::InliningPolicy::All;
+    let mut policy = llvm_metal_compiler::air::InliningPolicy::default();
     if let Some(index) = args.iter().position(|arg| arg == "--inlining") {
         if !args
             .first()
@@ -47,7 +47,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "{USAGE}\n\nCompile the supported integer/buffer profile to AIR and metallib. Compilation does not execute GPU code."
+            "{USAGE}\n\nCompile the supported integer/buffer profile to AIR and metallib. Selective inlining is the default; use --inlining all to force full inlining. Compilation does not execute GPU code."
         );
         return ExitCode::SUCCESS;
     }

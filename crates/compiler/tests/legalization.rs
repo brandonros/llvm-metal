@@ -169,7 +169,7 @@ fn wide_unsupported_operations_fail_without_mutating_input() {
 }
 
 #[test]
-fn private_volatile_barrier_survives_helper_inlining() {
+fn private_volatile_barrier_survives_default_retention_and_explicit_inlining() {
     let context = Context::create();
     let text =
         source("%x = load i8, ptr %p\n%y = call i8 @barrier(i8 %x) noinline\nstore i8 %y, ptr %p")
@@ -182,8 +182,23 @@ fn private_volatile_barrier_survives_helper_inlining() {
         }";
     let module = parse_ir(&context, text.as_bytes(), "barrier").unwrap();
     let (air, _) = legalize(&module, &interface()).unwrap();
-    let text = air.print_to_string().to_string();
-    assert!(text.contains("load volatile i8"));
+    assert!(
+        air.print_to_string()
+            .to_string()
+            .contains("load volatile i8")
+    );
+    assert!(air.get_function("barrier").is_some());
+    let (air, _) = llvm_metal_compiler::air::legalize_with_policy(
+        &module,
+        &interface(),
+        llvm_metal_compiler::air::InliningPolicy::All,
+    )
+    .unwrap();
+    assert!(
+        air.print_to_string()
+            .to_string()
+            .contains("load volatile i8")
+    );
     assert!(air.get_function("barrier").is_none());
 }
 
@@ -248,7 +263,9 @@ fn private_helper_arguments_require_all_callers_to_be_private() {
 #[test]
 fn existing_unreachable_terminators_preserve_source_undefined_behavior() {
     let context = Context::create();
-    let text = source("%x = load i32, ptr %p\n%valid = icmp ult i32 %x, 3\nbr i1 %valid, label %done, label %invalid\ninvalid:\nunreachable\ndone:\nstore i32 42, ptr %p");
+    let text = source(
+        "%x = load i32, ptr %p\n%valid = icmp ult i32 %x, 3\nbr i1 %valid, label %done, label %invalid\ninvalid:\nunreachable\ndone:\nstore i32 42, ptr %p",
+    );
     let module = parse_ir(&context, text.as_bytes(), "unreachable").unwrap();
     let (air, _) = legalize(&module, &interface()).unwrap();
     air.verify().unwrap();

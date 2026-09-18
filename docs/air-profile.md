@@ -68,18 +68,17 @@ Supported input includes 1/8/16/32/64-bit integer operations, branches, PHIs,
 and existing unreachable terminators (source undefined behavior),
 fixed vectors/arrays/structs with matching source/AIR layouts, stack allocations,
 loads/stores, pointer helpers and constant integer/array globals. Defined C/fastcc
-helpers inline completely by default. An experimental retained-call profile is
-described below. Surviving pointer address-space conversions are rejected. A type/opcode passing validation does not establish support for every
+helpers use selective inlining by default, as described below. Surviving pointer address-space conversions are rejected. A type/opcode passing validation does not establish support for every
 possible combination; library/pipeline creation remains a separate check.
 
-### Experimental retained helpers
+### Retained helpers and inlining
 
 `compile --inlining selective` retains internal, nonrecursive helpers with void
 or i8/i16/i32/i64 returns and scalar or pointer parameters. It retains eligible
 functions with at least 32 LLVM instructions or an explicit `noinline` request;
 smaller wrappers and unsupported interfaces still inline. `retain-scalar` is a
-narrow diagnostic policy without pointer parameters. Both are opt-in; `all`
-remains the default. Internal C/fastcc definitions and all direct call sites are
+narrow diagnostic policy without pointer parameters. `selective` is the default in both library APIs and the CLI; `--inlining all`
+opts into full inlining. Internal C/fastcc definitions and all direct call sites are
 normalized together to C for AIR. Scalar-i128 interfaces and helpers depending
 on the entry's thread index continue to require inlining. Pointer/aggregate
 returns are not yet retained. Copy/stack ABI parameters (`byval`, `byref`,
@@ -106,7 +105,7 @@ are dropped explicitly; ABI attributes such as `sret` remain intact.
 The existing LLVM writer and metallib container carry the helper definitions.
 Retained LLVM calls do not promise how Apple's backend will optimize them.
 Measure AIR size, first/repeated library and pipeline creation, GPU execution,
-and correctness independently before selecting a production policy.
+and correctness independently when tuning the policy or choosing full inlining.
 
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
 three-way comparison, scalar integer absolute value, leading/trailing-zero counts and signed/unsigned min/max,

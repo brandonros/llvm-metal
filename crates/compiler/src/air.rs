@@ -355,13 +355,13 @@ pub(crate) fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> 
     }
 }
 
-/// Experimental helper retention. The default preserves the established fully
-/// inlined profile. Scalar retention supports direct, nonrecursive internal calls.
+/// Selective helper retention is the default. `All` opts into the fully inlined
+/// profile; scalar retention is a narrower diagnostic policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum InliningPolicy {
-    #[default]
     All,
     RetainScalar,
+    #[default]
     Selective,
 }
 
@@ -369,7 +369,7 @@ pub fn legalize<'ctx>(
     input: &Module<'ctx>,
     interface: &KernelInterface,
 ) -> Result<(Module<'ctx>, MetalBindings), String> {
-    legalize_with_policy(input, interface, InliningPolicy::All)
+    legalize_with_policy(input, interface, InliningPolicy::default())
 }
 
 pub fn legalize_with_policy<'ctx>(

@@ -12,7 +12,7 @@ pub struct CompiledKernel {
 }
 
 pub fn compile(module: &Module<'_>, interface: &KernelInterface) -> Result<CompiledKernel, String> {
-    compile_with_policy(module, interface, air::InliningPolicy::All)
+    compile_with_policy(module, interface, air::InliningPolicy::default())
 }
 
 pub fn compile_with_policy(
