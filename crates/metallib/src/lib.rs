@@ -1,5 +1,5 @@
 //! Minimal single-compute-function Metal library container.
-//! Format adapted from Metal.jl's compiler/library.jl (MIT); see third-party/.
+//! Format adapted from Metal.jl's compiler/library.jl (MIT); see THIRD_PARTY_NOTICES.
 //! Emits macOS metallib 1.2.4, AIR 2.4, Metal 3.0, without reflection records.
 
 use sha2::{Digest, Sha256};

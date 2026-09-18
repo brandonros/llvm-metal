@@ -16,7 +16,7 @@ No PTX, Rust-CUDA, CUDA toolkit or Metal source compiler is used. Inkwell/native
 LLVM supplies parsing, verification and optimization. The pinned external
 llvm-downgrade supplies older bitcode serialization. The four workspace crates
 are `llvm-metal-abi`, `llvm-metal-compiler`, `llvm-metal-metallib` and
-`llvm-metal-runtime`; attribution is in [third-party](third-party/README.md).
+`llvm-metal-runtime`.
 
 ## Build and run
 
