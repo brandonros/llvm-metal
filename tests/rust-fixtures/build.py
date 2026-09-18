@@ -38,7 +38,7 @@ def post_inline(source, output, *, timeout=None):
     # ScalarEvolution predicate analysis take minutes (see optimizer fixture).
     run(
         "opt", "-passes=function(loop-simplify,lcssa,loop(indvars),loop-unroll,"
-        "sroa,instcombine,simplifycfg),default<O3>,globaldce,strip-dead-prototypes,verify",
+        "sroa,instcombine<verify-fixpoint;max-iterations=4>,simplifycfg),default<O3>,globaldce,strip-dead-prototypes,verify",
         "-unroll-threshold=1000", "-vectorize-slp=false", "-vectorize-loops=false",
         source, "-o", output, timeout=timeout,
     )
