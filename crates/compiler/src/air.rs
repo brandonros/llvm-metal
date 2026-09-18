@@ -21,7 +21,14 @@ fn check_type(
         BasicTypeEnum::IntType(t) if matches!(t.get_bit_width(), 1 | 8 | 16 | 32 | 64) => (),
         BasicTypeEnum::PointerType(t) if t.get_address_space() == AddressSpace::default() => (),
         BasicTypeEnum::ArrayType(t) => check_type(t.get_element_type(), source, destination)?,
-        BasicTypeEnum::VectorType(t) => check_type(t.get_element_type(), source, destination)?,
+        BasicTypeEnum::VectorType(t) => {
+            if let BasicTypeEnum::IntType(element) = t.get_element_type() {
+                if matches!(element.get_bit_width(), 24 | 40 | 48 | 56) {
+                    return Err("odd-width integer vectors are unsupported".into());
+                }
+            }
+            check_type(t.get_element_type(), source, destination)?;
+        },
         BasicTypeEnum::StructType(t) if !t.is_opaque() => {
             for (i, field) in t.get_field_types().into_iter().enumerate() {
                 check_type(field, source, destination)?;
@@ -364,6 +371,7 @@ pub fn legalize<'ctx>(
     crate::libcalls::lower(&module)?;
     crate::wide_helpers::lower(&module)?;
     crate::wide::lower(&module)?;
+    crate::odd::lower(&module)?;
     validate_input(&module)?;
     let context = module.get_context();
     let implementation = module
@@ -980,6 +988,7 @@ pub fn legalize<'ctx>(
             )
             .map_err(|e| e.to_string())?;
     }
+    crate::odd::lower(&module)?;
     unsafe extern "C" {
         fn LLVMMetalPreparePhiConstants(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
     }
