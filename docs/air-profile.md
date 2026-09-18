@@ -137,6 +137,10 @@ The test harness uses separate guarded allocations and reads outputs only after
 command completion. Winner publication is checked at this host synchronization
 point; this does not demonstrate release/acquire publication to concurrent GPU
 consumers. PreparedKernel reuses fixed-size shared allocations across synchronous launches and
-returns upload/download, wall and optional GPU command-buffer timings. Library
+returns upload/download, wall and optional GPU command-buffer timings.
+`reconfigure` replaces storage only when buffer lengths/offsets change and keeps
+the compiled pipeline. Failed validation/allocation preserves the old configuration.
+`clear` erases retained shared storage after synchronous use; resources are also
+erased before replacement or release. Callers own cleanup of host mirrors. Library
 and pipeline creation have separate timings. Runtime reflection, asynchronous
 queues and multi-kernel libraries remain future work.

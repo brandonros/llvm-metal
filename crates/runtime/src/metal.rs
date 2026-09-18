@@ -31,8 +31,37 @@ pub struct DispatchTimings {
 
 pub struct PreparedKernel {
     kernel: Kernel,
-    resources: Vec<Retained<ProtocolObject<dyn MTLBuffer>>>,
+    resources: Resources,
     shapes: Vec<(usize, usize)>,
+}
+
+// Shared buffers may contain secrets. A resource owner clears them before release,
+// including partially completed/erroring dispatches and replacement allocations.
+struct Resources(Vec<Retained<ProtocolObject<dyn MTLBuffer>>>);
+impl Resources {
+    fn clear(&mut self) {
+        for buffer in &self.0 {
+            // SAFETY: shared storage, exclusive owner, all dispatches are synchronous.
+            unsafe {
+                let pointer = buffer.contents().as_ptr().cast::<u8>();
+                for offset in 0..buffer.length() {
+                    pointer.add(offset).write_volatile(0);
+                }
+            }
+        }
+        std::sync::atomic::compiler_fence(std::sync::atomic::Ordering::SeqCst);
+    }
+}
+impl std::ops::Deref for Resources {
+    type Target = [Retained<ProtocolObject<dyn MTLBuffer>>];
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl Drop for Resources {
+    fn drop(&mut self) {
+        self.clear();
+    }
 }
 
 pub struct Kernel {
@@ -158,11 +187,8 @@ impl Kernel {
         Ok(())
     }
 
-    fn allocate(
-        &self,
-        buffers: &[Buffer],
-    ) -> Result<Vec<Retained<ProtocolObject<dyn MTLBuffer>>>, String> {
-        let mut resources = Vec::with_capacity(buffers.len());
+    fn allocate(&self, buffers: &[Buffer]) -> Result<Resources, String> {
+        let mut resources = Resources(Vec::with_capacity(buffers.len()));
         for buffer in buffers.iter() {
             let resource = self
                 .device
@@ -171,7 +197,7 @@ impl Kernel {
                     MTLResourceOptions::StorageModeShared,
                 )
                 .ok_or("buffer allocation failed")?;
-            resources.push(resource);
+            resources.0.push(resource);
         }
         Ok(resources)
     }
@@ -255,6 +281,31 @@ impl Kernel {
 }
 
 impl PreparedKernel {
+    /// Clear retained shared device storage after synchronous use. Host mirrors
+    /// belong to the caller and must be cleared separately when they hold secrets.
+    pub fn clear(&mut self) {
+        self.resources.clear();
+    }
+
+    /// Replace allocations only when lengths/offsets change, retaining the pipeline.
+    /// Validation/allocation failure leaves the previous configuration usable.
+    /// Returns whether new storage was allocated. Replaced storage is cleared.
+    pub fn reconfigure(&mut self, buffers: &[Buffer]) -> Result<bool, String> {
+        self.kernel.validate(buffers, 1, 1)?;
+        if buffers
+            .iter()
+            .map(|b| (b.bytes.len(), b.offset))
+            .eq(self.shapes.iter().copied())
+        {
+            return Ok(false);
+        }
+        let shapes: Vec<_> = buffers.iter().map(|b| (b.bytes.len(), b.offset)).collect();
+        let resources = self.kernel.allocate(buffers)?;
+        self.resources = resources;
+        self.shapes = shapes;
+        Ok(true)
+    }
+
     pub fn device_name(&self) -> String {
         self.kernel.device_name()
     }
@@ -284,5 +335,32 @@ impl PreparedKernel {
             self.kernel
                 .execute(&self.resources, buffers, threads, group_size)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires an Apple GPU"]
+    fn shared_resources_clear_retained_storage_on_drop() {
+        let device = MTLCreateSystemDefaultDevice().unwrap();
+        let buffer = device
+            .newBufferWithLength_options(4096, MTLResourceOptions::StorageModeShared)
+            .unwrap();
+        // Hold a second reference so we can inspect storage after owner destruction.
+        unsafe {
+            buffer
+                .contents()
+                .as_ptr()
+                .cast::<u8>()
+                .write_bytes(0x5a, 4096);
+        }
+        {
+            let _owner = Resources(vec![buffer.clone()]);
+        }
+        let bytes =
+            unsafe { std::slice::from_raw_parts(buffer.contents().as_ptr().cast::<u8>(), 4096) };
+        assert!(bytes.iter().all(|&b| b == 0));
     }
 }
