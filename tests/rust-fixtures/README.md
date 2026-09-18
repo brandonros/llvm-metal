@@ -191,7 +191,8 @@ nix develop path:.#rust-fixtures --command env \
 ## Solana
 
 `solana` is a separate fixture workspace using curve25519-dalek 4.1.3 and an
-explicit local consumer snapshot. It applies the consumer's locked zeroize fork.
+explicit local consumer snapshot with `logic/test-vectors`. It applies the
+consumer's locked zeroize fork and imports the consumer's fixed Solana vector.
 The ten `consumer_solana_*` entries cover SHA-512, clamp, scalar reduction from
 32/64 bytes, scalar product, point decompression/doubling, base multiplication,
 public-key derivation, Base58 and full addresses. Each consumes runtime bytes
@@ -218,24 +219,49 @@ submission, pipeline creation and a single-thread CPU baseline.
 
 ## RSA modulus
 
-The `rsa` workspace takes an explicit local consumer snapshot, including its
-reviewed `crypto-bigint` 0.5.5 source and locked zeroize fork. Dependency source
-hashes are recorded alongside the wrappers and producer. Fourteen runtime-input
-fixtures progress through 256/1024-bit multiplication, carry/borrow/comparison,
-shifts/counts, division, Montgomery arithmetic, bounded/full exponentiation,
-prime filtering, HMAC candidate derivation, 2048-bit interval/residue construction,
-range preparation, cursor advancement and single-lane resumable mining.
+The `rsa` workspace requires an explicit local consumer snapshot exposing the
+independent-candidate API and the opt-in `logic/test-vectors` feature. Public P/Q
+factors are imported from that module; the fixture does not maintain a copy.
+The fixture contract is provided by vanity-miner-rs commit
+[`48ea297`](https://github.com/brandonros/vanity-miner-rs/commit/48ea297)
+on `codex/gpu-test-consolidation`; compatible descendants can be selected explicitly.
+The consumer's reviewed `crypto-bigint` source and locked zeroize fork are
+snapshotted and hashed with the wrapper sources.
 
-Native oracles compare against independent BigUint arithmetic and SHA-256/HMAC,
-public prime/pseudoprime answers and the consumer's public test factors. The GPU
-checks full intermediate records, input preservation and guards, including zero
-divisors, full-width carries, shift limits, empty ranges, cursor wrap, misses,
-invalid launch work and retiring successful tasks. The separate consumer tests
-exercise grid dispatch and host key verification/export.
+Fourteen runtime-input fixtures cover multiplication, carry/borrow/comparison,
+shifts/counts, division, Montgomery arithmetic, exponentiation, prime filtering,
+HMAC factor derivation, interval/residue construction, eligible-q sampling,
+pair eligibility, and complete independent candidates. Native oracles retain
+independent BigUint and SHA-256/HMAC calculations. Fixed public factors check
+match/miss/error payloads and repeatability across intervening candidate IDs.
+GPU tests compare every output byte and preserve inputs and buffer guards.
+
+The former `prepare`, `advance`, and `mine` entries targeted a deleted resumable
+API. They are replaced by `sample_q`, `eligible_pair`, and `candidate`; cursor
+retirement is no longer an application behavior. The explicit mapping is in
+[`coverage.json`](coverage.json). Current producer errors identify missing
+consumer fixture features before compilation instead of implying compatibility
+with the old pinned dependency.
 
 ```sh
 nix develop path:.#rust-fixtures --command env \
-  LLVM_METAL_CONSUMER_PATH=/absolute/path/to/vanity-miner-rs-metal \
+  LLVM_METAL_CONSUMER_PATH=/absolute/path/to/compatible-vanity-miner-rs \
   cargo test --locked -p llvm-metal-compiler --test rsa \
   -- --ignored --nocapture --test-threads=1
 ```
+
+## Coverage ownership
+
+The miner's `scripts/test-gpu.sh` owns production grid dispatch, candidate matching,
+winner publication, cancellation, CLI exports, and complete self-test execution.
+Its logic self-tests own the fixed crypto vectors. RSA and Solana local fixtures
+reuse `logic/test-vectors`; pinned Shallenge fixtures remain explicitly historical
+at the revision named above, and standalone k256 probes retain their independent
+public curve constants without introducing a miner dependency.
+
+Compiler GPU suites retain runtime-input intermediate corpora, guards, and reduced
+LLVM regressions needed to locate a lowering defect. A pass on a historical pin
+is not a pass of the current application. No intermediate or LLVM regression is
+removed merely because a larger miner kernel also reaches that operation.
+Use [`coverage.json`](coverage.json) for the fixture ownership/change mapping and
+the miner's `crates/cli/tests/gpu-coverage.json` for application test selection.

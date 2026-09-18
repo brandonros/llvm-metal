@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "entry": "consumer_rsa_prepare",
+  "entry": "consumer_rsa_eligible_pair",
   "calling_convention": "C",
   "invocations": 1,
   "aliasing": "disjoint buffers",
@@ -9,14 +9,14 @@
       "name": "input",
       "kind": "buffer",
       "access": "read",
-      "bytes": 1984,
+      "bytes": 772,
       "alignment": 1
     },
     {
       "name": "output",
       "kind": "buffer",
       "access": "write",
-      "bytes": 913,
+      "bytes": 1,
       "alignment": 1
     }
   ]

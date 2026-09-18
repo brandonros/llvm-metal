@@ -192,18 +192,18 @@ fn stage_11_progression() {
 
 #[test]
 #[ignore = "requires Apple GPU, local consumer and pinned .#rust-fixtures shell"]
-fn stage_12_prepare() {
-    check("consumer_rsa_prepare");
+fn stage_12_sample_q() {
+    check("consumer_rsa_sample_q");
 }
 
 #[test]
 #[ignore = "requires Apple GPU, local consumer and pinned .#rust-fixtures shell"]
-fn stage_13_advance() {
-    check("consumer_rsa_advance");
+fn stage_13_eligible_pair() {
+    check("consumer_rsa_eligible_pair");
 }
 
 #[test]
 #[ignore = "requires Apple GPU, local consumer and pinned .#rust-fixtures shell"]
-fn stage_14_mine() {
-    check("consumer_rsa_mine");
+fn stage_14_candidate() {
+    check("consumer_rsa_candidate");
 }

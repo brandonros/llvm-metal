@@ -3,7 +3,7 @@ use crate::factors::{P, Q};
 use crypto_bigint::{Encoding, U1024, U2048};
 use std::{vec, vec::Vec};
 use vanity_logic::{
-    modes::rsa_modulus::{self as rsa, SearchConfig, Task},
+    modes::rsa_modulus::SearchConfig,
     search::{device_record::DeviceRecord, hex_pattern::HexPattern},
 };
 pub fn bytes<T: DeviceRecord>(value: &T) -> Vec<u8> {
@@ -73,97 +73,62 @@ pub fn cases(entry: &str) -> Option<Vec<Vec<u8>>> {
             inverted.upper = [0; 256];
             cases.push([bytes(&inverted), P.to_vec()].concat());
         }
-        "consumer_rsa_prepare" => {
+        "consumer_rsa_sample_q" => {
             for bits in [1, 8, 1024, 2048] {
-                for id in [0u64, 17] {
+                for id in [0u64, 17, u64::MAX] {
                     let mut c = config();
                     c.suffix = c.lower;
                     c.suffix_bits = bits;
-                    let mut task = Task::EMPTY;
-                    task.p = P;
-                    task.id = id;
-                    cases.push([bytes(&c), bytes(&task)].concat());
+                    cases.push([bytes(&c), P.to_vec(), id.to_le_bytes().to_vec()].concat());
                     c.upper = [0xff; 256];
-                    cases.push([bytes(&c), bytes(&task)].concat());
+                    cases.push([bytes(&c), P.to_vec(), id.to_le_bytes().to_vec()].concat());
                 }
             }
             let mut c = config();
-            let p = U1024::from_be_slice(&P);
-            let square: U2048 = p.mul(&p);
+            let square: U2048 = U1024::from_be_slice(&P).mul(&U1024::from_be_slice(&P));
             c.lower = square.to_be_bytes();
             c.upper = c.lower;
-            let mut task = Task::EMPTY;
-            task.p = P;
-            cases.push([bytes(&c), bytes(&task)].concat());
+            cases.push([bytes(&c), P.to_vec(), 0u64.to_le_bytes().to_vec()].concat());
+            c.upper = [0; 256];
+            cases.push([bytes(&c), P.to_vec(), 1u64.to_le_bytes().to_vec()].concat());
         }
-        "consumer_rsa_advance" => {
-            let c = config();
-            let mut task = Task::EMPTY;
-            task.p = P;
-            task.first = Q;
-            task.state = 2;
-            task.count = U1024::from_u8(5).to_be_bytes();
-            task.remaining = task.count;
-            task.cursor = U1024::from_u8(4).to_be_bytes();
-            for offset in [0u32, 1, 4, 5, u32::MAX] {
-                for assigned in [0u32, 1, 4, 5, u32::MAX] {
-                    cases.push(
-                        [
-                            bytes(&c),
-                            bytes(&task),
-                            offset.to_le_bytes().to_vec(),
-                            assigned.to_le_bytes().to_vec(),
-                        ]
-                        .concat(),
-                    );
-                }
-            }
-            for state in [0u32, 1, 3] {
-                task.state = state;
-                cases.push(
-                    [
-                        bytes(&c),
-                        bytes(&task),
-                        0u32.to_le_bytes().to_vec(),
-                        1u32.to_le_bytes().to_vec(),
-                    ]
-                    .concat(),
-                );
-            }
-        }
-        "consumer_rsa_mine" => {
-            let c = config();
-            let pattern = HexPattern::new("", "", 256).unwrap();
-            let encode = |c: &SearchConfig,
-                          p: &HexPattern,
-                          t: &Task,
-                          start: u64,
-                          stride: u32,
-                          steps: u32| {
-                [
-                    bytes(c),
-                    bytes(p),
-                    bytes(t),
-                    start.to_le_bytes().to_vec(),
-                    stride.to_le_bytes().to_vec(),
-                    steps.to_le_bytes().to_vec(),
-                ]
-                .concat()
-            };
-            cases.push(encode(&c, &pattern, &Task::EMPTY, 0, 1, 1));
-            cases.push(encode(&c, &pattern, &Task::EMPTY, 7, 1, 2));
-            let mut active = Task::EMPTY;
-            active.p = P;
-            active.id = 17;
-            assert_eq!(rsa::prepare_range(&c, &mut active), Ok(true));
-            cases.push(encode(&c, &pattern, &active, 20, 1, 1));
+        "consumer_rsa_eligible_pair" => {
+            let any = HexPattern::new("", "", 256).unwrap();
             let miss = HexPattern::new("00", "", 256).unwrap();
-            cases.push(encode(&c, &miss, &active, 20, 1, 1));
-            for (start, stride, steps) in [(0, 0, 1), (0, 1, 0), (u64::MAX, 2, 2)] {
-                cases.push(encode(&c, &pattern, &Task::EMPTY, start, stride, steps));
+            for (p, q, pattern) in [
+                (P, Q, any),
+                (P, Q, miss),
+                (P, P, any),
+                ([0; 128], Q, any),
+                (P, [0; 128], any),
+            ] {
+                cases.push([p.to_vec(), q.to_vec(), bytes(&pattern)].concat());
             }
-            active.state = 3;
-            cases.push(encode(&c, &pattern, &active, 0, 1, 1));
+            let mut composite = Q;
+            composite[127] &= 0xfe;
+            cases.push([P.to_vec(), composite.to_vec(), bytes(&any)].concat());
+        }
+        "consumer_rsa_candidate" => {
+            let c = config();
+            let any = HexPattern::new("", "", 256).unwrap();
+            let encode = |c: &SearchConfig, p: &HexPattern, id: u64| {
+                [bytes(c), bytes(p), id.to_le_bytes().to_vec()].concat()
+            };
+            // Repeated IDs separated by other work must return identical records.
+            for id in [0, 7, 0, u64::MAX] {
+                cases.push(encode(&c, &any, id));
+            }
+            cases.push(encode(&c, &HexPattern::new("00", "", 256).unwrap(), 0));
+            for change in 0..4 {
+                let mut invalid = c;
+                match change {
+                    0 => invalid.reserved = 1,
+                    1 => invalid.p_count = [0; 128],
+                    2 => invalid.upper = [0; 256],
+                    _ => invalid.suffix_bits = 0,
+                }
+                cases.push(encode(&invalid, &any, 0));
+            }
         }
         _ => return None,
     }
