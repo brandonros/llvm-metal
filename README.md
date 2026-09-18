@@ -1,27 +1,16 @@
 # llvm-metal
-Compile LLVM bitcode into Metal libraries for Apple GPUs.
 
-The integer/buffer pipeline runs real Rust Shallenge, Ethereum, Bitcoin, Solana and RSA modulus routines
-on an Apple M5, including candidate checking and indexed batches with atomic
-match counts and winner indices. This remains an experimental integer/buffer
-compiler profile.
+Compile LLVM 21 IR or bitcode into Metal libraries for Apple GPUs.
+Experimental support for integer kernels with explicit buffer arguments;
+see the [supported profile and limitations](docs/air-profile.md).
 
-```text
-stock Rust → linked LLVM 21 bitcode + interface.json
-           → our AIR legalization → llvm-downgrade → our metallib packager
-           → objc2-metal runtime → checked Apple GPU output
-```
+## Build and compile
 
-No PTX, Rust-CUDA, CUDA toolkit or Metal source compiler is used. Inkwell/native
-LLVM supplies parsing, verification and optimization. The pinned external
-llvm-downgrade supplies older bitcode serialization. The four workspace crates
-are `llvm-metal-abi`, `llvm-metal-compiler`, `llvm-metal-metallib` and
-`llvm-metal-runtime`.
-
-## Build and run
+Use Nix with flakes enabled. The development shells supply LLVM, Rust, and
+`llvm-downgrade`; the fixture shell pins the Rust bitcode producer separately.
 
 ```sh
-nix develop --command cargo test --locked --workspace
+nix develop --command cargo build --locked --workspace
 nix develop .#rust-fixtures --command python3 tests/rust-fixtures/build.py
 nix develop --command cargo run --locked -p llvm-metal-compiler --bin llvm-metalc -- \
   compile target/rust-fixtures/shallenge/kernel.bc \
@@ -29,11 +18,17 @@ nix develop --command cargo run --locked -p llvm-metal-compiler --bin llvm-metal
   --output target/compiled/shallenge
 ```
 
-Compilation writes `kernel.air.ll`, `kernel.air.bc`, `kernel.metallib` and
-`kernel.bindings.json`. The CLI does not execute input. `inspect <file.ll|file.bc>
---entry <name>` only parses/verifies and reports definitions and declarations.
+Compilation writes AIR, `kernel.metallib`, and `kernel.bindings.json` to the
+output directory. Run `llvm-metalc --help` for CLI usage. Execute libraries
+through the `llvm-metal-runtime` crate on macOS with an Apple GPU.
 
-The explicit GPU suite requires macOS and an Apple GPU:
+## Tests
+
+```sh
+nix develop --command cargo test --locked --workspace
+```
+
+GPU tests are opt-in and require macOS with an Apple GPU:
 
 ```sh
 nix develop .#rust-fixtures --command cargo test --locked \
@@ -41,31 +36,6 @@ nix develop .#rust-fixtures --command cargo test --locked \
   --test-threads=1 --skip local_sha_intermediates
 ```
 
-Use `path:.` instead of `.` in Nix commands while new files are untracked. The
-flake pins native LLVM 21.1.8 and the downgrader. Its separate fixture shell pins
-stable Rust 1.93.0 with prebuilt NVPTX libraries; the default shell uses the newer
-Rust compiler from locked nixpkgs. Non-Nix builds need equivalent LLVM development
-libraries, libffi, a C++ compiler, and `llvm-downgrade` on PATH; set
-`LLVM_SYS_211_PREFIX` to the LLVM prefix containing `bin/llvm-config`.
-
-## Scope and tests
-
-The supported entry is a C function returning void with explicit buffer pointers.
-The compiler retargets layouts and address spaces, inlines helpers, moves constant
-tables, lowers declared thread-index/device-atomic operations, and writes AIR
-metadata. It rejects unsupported operations rather than providing runtime stubs.
-See [the profile and limitations](docs/air-profile.md).
-
-GPU tests are opt-in and fail if their prerequisites or comparisons fail. Results
-have been checked on Apple M5/macOS 26.6.2 only. Buffer guards, CPU comparisons,
-independent SHA answers, partial groups and concurrent atomic results are tested;
-the consumer includes a warm Solana throughput sweep. Other Apple GPU/OS
-combinations remain unvalidated.
-
-The [fixture guide](tests/rust-fixtures/README.md) explains pinned dependencies,
-source hashes and local SHA diagnostics. Keep small source fixtures in Git and
-generate ordinary bitcode under `target/`. The [phase-2 plan](https://github.com/brandonros/llvm-metal/issues/2)
-tracks the crypto progression. The implemented k256 path includes wide integer
-arithmetic and secp256k1; Solana adds SHA-512, dalek/Ed25519 and Base58.
-RSA modulus adds full-width arithmetic, prime filtering and resumable factor search.
-RSA-PSS/CRT GPU integration and unrestricted LLVM support remain future work.
+See the [fixture guide](tests/rust-fixtures/README.md) for other workloads and
+local SHA diagnostics. Use `path:.` or `path:.#rust-fixtures` in Nix commands
+when testing untracked source files.
