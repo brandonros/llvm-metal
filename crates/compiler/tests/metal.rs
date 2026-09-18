@@ -800,8 +800,22 @@ fn prepared_buffers_reuse_storage_and_reject_changed_shapes() {
             .unwrap_err()
             .contains("stay fixed")
     );
-    buffers[1].bytes.pop();
-    // SAFETY: these dispatch contracts are rejected before executing.
+    // A changed shape can be explicitly reconfigured without recompiling the pipeline.
+    assert!(prepared.reconfigure(&buffers).unwrap());
+    assert!(!prepared.reconfigure(&buffers).unwrap());
+    prepared.clear();
+    // Clearing the retained allocations must not change host mirrors or prevent reuse.
+    let before = buffers[0].bytes.clone();
+    unsafe {
+        prepared.run(&mut buffers, 1, 1).unwrap();
+    }
+    assert_eq!(buffers[0].bytes, before);
+    assert_eq!(&buffers[1].bytes[..4], &84_u32.to_le_bytes());
+    let offset = buffers[0].offset;
+    buffers[0].offset = buffers[0].bytes.len();
+    assert!(prepared.reconfigure(&buffers).is_err());
+    buffers[0].offset = offset;
+    assert!(!prepared.reconfigure(&buffers).unwrap());
     assert!(unsafe { prepared.run(&mut buffers, 2, 1) }.is_err());
     assert!(unsafe { prepared.run(&mut buffers, 1, 0) }.is_err());
 }
