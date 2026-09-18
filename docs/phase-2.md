@@ -1,5 +1,29 @@
 # Phase 2: grow llvm-metal from the vanity-miner dependency graph
 
+## Immediate priority: port integer legalization to Rust first
+
+After capturing the current test baseline, port `odd_integers.cpp` into
+`src/odd.rs`, then `wide_integers.cpp` into `src/wide.rs`. These are our own
+transformation algorithms; LLVM's existing C API appears sufficient to implement
+them through Inkwell/llvm-sys. Port and validate small slices before removing
+each C++ implementation. Wide-integer lowering may temporarily retain its call
+to the existing C++ private-memory check, so pointer analysis is not a prerequisite.
+
+All these passes operate on LLVM IR, including the ones written in Rust. The
+distinction is which APIs they need: integer legalization uses ordinary IR
+inspection and construction, while configuring LLVM's existing address-space
+inference pass and replacing named-metadata operands expose C API gaps.
+
+After the integer ports, reassess the remaining native code. Port our pointer,
+volatile-copy and PHI logic where appropriate, and decide which LLVM utilities
+need thin bindings. Do not make a custom LLVM build or moving C++ into llvm-sys
+a prerequisite for the integer work. Moving a bridge into a fork does not count
+as eliminating C++; the benefit of the initial ports is owning our compiler
+logic in Rust, not a promise of fewer lines. The detailed sequence is below in
+[the C++ removal plan](#replace-the-compilers-c-implementations-with-rust).
+
+## Scope and source baseline
+
 Phase 1 supplies stock-rustc device bitcode. Phase 2 builds LLVM → AIR → Metal
 execution in small, independently testable steps drawn from the real workloads.
 The first working GPU kernel is the infrastructure milestone, not the end of
@@ -362,6 +386,106 @@ When several lanes can win, compare allowed results and counts instead of a
 fixed scheduling-dependent winning lane.
 
 ## Work order and test artifacts
+
+### Replace the compiler's C++ implementations with Rust
+
+The binding baseline now uses our forks without upgrading the released code:
+
+- `brandonros/inkwell`: 0.10.0 at
+  `d0a07a79625f5ac705e7daab4d9c8eb81016300e`.
+- `brandonros/llvm-sys.rs`: 211.1.0 at
+  `3bcf54fe817488d7ea8723abbe9fcc4524ceb257`, on our `llvm-21` branch.
+- Native LLVM remains the Nix-pinned LLVM 21.1.8. Owning the binding crates does
+  not provide C entry points for arbitrary LLVM C++ methods.
+
+The compiler workspace pins Inkwell directly and patches its crates.io llvm-sys
+dependency at the workspace root. The consumer's Metal feature uses only our
+runtime and ABI crates, so it needs no binding patch. Its build script invokes
+the selected compiler workspace separately, where this patch applies. A future
+workspace depending directly on the compiler must repeat the patch, or use an
+Inkwell revision whose llvm-sys dependency points directly at our fork. The
+consumer's existing remote compiler revision is not advanced by this local edit.
+
+Keep Metal-specific algorithms in `llvm-metal/crates/compiler`. Put generic,
+unsafe LLVM API bindings in `llvm-sys.rs`, and reusable context/lifetime-aware
+wrappers in Inkwell. Do not move entire Metal passes into either binding crate.
+
+The native code is split by responsibility: `odd_integers.cpp`,
+`wide_integers.cpp`, `pointer_provenance.cpp`, `volatile_copies.cpp`,
+`phi_constants.cpp`, `module_flags.cpp` and `address_spaces.cpp`. Shared pointer
+predicates are declared in `pointer_provenance.h`. The seven exported C functions
+and their call order are unchanged by this split. `address_spaces.cpp` owns only
+inference and its pointer fixups: nullable PHIs before inference, then constant
+volatile-load typing and null-cast folding afterward. PHI constant preparation
+remains a separate final step after optimization. Some helpers belong to ongoing
+workload development; their presence is not
+evidence that the new workloads have passed GPU validation.
+
+| Current implementation | Rust destination | Remaining dependency or complication |
+|---|---|---|
+| `LLVMMetalLowerWideIntegers` | `src/wide.rs` | Existing builders support pair-of-u64 lowering. Preserve cyclic PHIs, carry/borrow, shifts, poison and private-memory checks. Extract wide constants through supported constant operations, not a truncating u64 getter. |
+| `LLVMMetalLowerOddIntegers` | `src/odd.rs` | Existing builders and target-data APIs support promotion of i24/i40/i48/i56. Preserve original byte spans, signedness, layout checks and rejected atomic/volatile accesses. |
+| `LLVMMetalPrivateMemory` | proposed `src/pointer_provenance.rs` | Replace C++ ValueTracking calls with an explicit, conservative traversal of casts/GEPs, globals, allocas and direct internal calls. Unknown callers, escapes and unresolved cycles must remain unsupported. |
+| `LLVMMetalExpandPrivateVolatileCopies` | proposed `src/volatile_copies.rs` | Existing builders plus shared provenance analysis. Keep volatile byte accesses, the 4096-byte limit and rejection of unsupported sources/destinations. |
+| Nullable PHI typing and null-cast folding inside `LLVMMetalInferAddressSpaces` | proposed `src/address_spaces.rs` | Existing builders plus a separate multi-object provenance analysis. Preserve null/undef/poison and reject mixed or unproven address spaces. |
+| Actual `InferAddressSpacesPass(0)` invocation | generic binding extension, then Inkwell wrapper | LLVM 21's C pass pipeline cannot select the explicit flat address space through the registered textual pass. AIR supplies no upstream TargetMachine to infer it. |
+| `LLVMMetalRemoveCodegenFlags` | Rust policy in `src/air.rs`, generic metadata mutation API below it | LLVM 21 exposes named-metadata reads/additions but lacks clearing/replacing its operands. Retain every flag except the deliberately removed PIC/PIE entries. |
+| `LLVMMetalPreparePhiConstants` | proposed `src/phi_constants.rs` | Replace the C++ constant-to-instruction utility for explicitly supported constant expressions. Materialize on incoming edges and preserve GEP source types, address spaces and semantics. |
+
+The staged implementation order is:
+
+1. **Capture the reference.** Record the exact source revisions and run existing
+   focused CPU, refusal and GPU tests against the C++ implementations. Identify
+   incomplete workload tests separately. Keep a temporary selectable reference
+   implementation while porting each pass.
+2. **Port odd integers first.** Use `src/odd.rs` as the entry point. Work through
+   arithmetic/casts, comparisons/shifts, PHIs and memory accesses. Preserve byte
+   spans, signedness, layout checks, poison behavior and unsupported-case errors.
+3. **Port wide integers next.** Use `src/wide.rs` as the entry point. Work through
+   constants/casts, arithmetic, multiplication/shifts, PHIs and memory accesses.
+   Retain the C++ private-memory check temporarily if needed. For both integer
+   ports, create placeholder PHIs before processing incoming values and account
+   for all users before deleting old cycles. Test boundaries and memory guards;
+   do not blindly copy flags onto wider operations.
+4. **Reassess and port shared provenance and volatile copies.** After the integer
+   implementations are in Rust, inspect the remaining native surface. Test
+   defined immutable globals, private allocas, internal helper arguments,
+   escaping functions, recursive calls, zero-length copies and refusal cases
+   before replacing their FFI calls.
+5. **Port nullable PHIs, null casts and PHI constants.** Keep the final constant
+   preparation after optimization so it cannot be folded back. Cover nested
+   expressions, loops, predecessor placement, shared predecessors and mixed
+   pointer spaces. Reject unsupported expressions with a precise diagnostic.
+6. **Resolve the two remaining LLVM API gaps.** Prototype generic APIs for
+   explicit-flat-address-space inference and named-metadata operand replacement.
+   Test these in llvm-sys and expose wrappers in Inkwell. The recommended interim
+   implementation is a minimal, opt-in C++ bridge in llvm-sys, with names that do
+   not impersonate official LLVM APIs. This removes compiler-local C++, but it
+   does not eliminate our C++ maintenance and is not the final Rust-only milestone.
+7. **Choose the final bridge removal route from evidence.** For inference, either
+   implement a bounded Rust analysis/rewrite with parity tests, or add the generic
+   entry point to LLVM's C API. Metadata mutation likewise needs an LLVM API
+   addition or a demonstrated lossless reconstruction strategy. An LLVM patch
+   means maintaining a custom LLVM build in Nix until upstream provides it;
+   the two Rust forks alone cannot solve this. Do not use textual IR replacement,
+   cast named metadata to ordinary values, or call C++ mangled symbols.
+8. **Delete native build plumbing when its last user is gone.** Remove the native
+   files, compiler `build.rs` and compiler `cc` build dependency. If a binding
+   bridge remains, report that explicitly. Pin and publish the tested dependency
+   commits before updating consuming workspaces.
+
+Each port must pass LLVM verification, existing input-nonmutation/refusal tests,
+and focused GPU comparisons of raw outputs and guards. Compare observable
+behavior and structural invariants against the reference; byte-identical IR is
+not required. Rerun immediate parent workloads after their prerequisite ports,
+then the established workload suite at the removal milestone. Check build and
+CPU tests on macOS and Linux; Apple execution remains a macOS acceptance gate.
+
+This plan removes our native transformation implementations. LLVM itself and
+the existing llvm-downgrade dependency remain native code. Replacing either
+with a Rust implementation is a separate undertaking.
+
+### Workload progression
 
 Start with 2.0 and a small selection from 2.1. Prioritize the SHA-256/Shallenge
 branch for the first complete workload. After SHA-256, PSS encoding can advance

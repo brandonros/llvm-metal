@@ -9,6 +9,7 @@ Buffers bind in argument order to Metal indices 0 onward. `aliasing` documents
 the producer contract; it is not a memory-safety proof or a generated noalias fact.
 
 Supported input includes 1/8/16/32/64-bit integer operations, branches, PHIs,
+and existing unreachable terminators (source undefined behavior),
 fixed vectors/arrays/structs with matching source/AIR layouts, stack allocations,
 loads/stores, pointer helpers and constant integer/array globals. Defined C/fastcc
 helpers must inline completely. Surviving pointer address-space conversions are
@@ -17,14 +18,15 @@ possible combination; library/pipeline creation remains a separate check.
 
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
 three-way comparison, scalar integer absolute value, leading/trailing-zero counts and signed/unsigned min/max,
-nonvolatile memcpy/memset,
+nonvolatile memcpy/memset and scalar C `memcmp`/`bcmp`,
 and removable assume/lifetime/alias hints. Unknown externals, inline assembly, indirect calls, mutable globals,
 pointer/integer casts, native LLVM atomics, volatile device memory, floating point,
 and NVVM metadata are rejected. Volatile accesses rooted in private allocas
 are preserved (including internal helper arguments when every direct caller
 provably supplies private storage), supporting subtle's local optimization barrier and the consumer's
-zeroize stores. Constant-size volatile memcpy up to 256 bytes between private
-allocas expands to volatile byte loads/stores. This supplies no
+zeroize stores. Constant-size volatile memcpy up to 4096 bytes into private
+allocas from private or defined immutable constant storage expands to volatile
+byte loads/stores. Volatile constant reads retain their constant address space. This supplies no
 device synchronization or constant-time execution guarantee. No allocator, panic handler, libdevice,
 barrier, threadgroup memory or general GPU runtime is supplied.
 
@@ -50,13 +52,31 @@ are rejected. GPU tests cover zero, boundaries and every input bit.
 
 A narrow scalar i128 pass lowers zero/sign extension from at most 64 bits,
 addition/subtraction, multiplication, bitwise AND/OR/XOR, byte swap, comparisons, selection,
-constant left/logical-right/arithmetic-right shifts (0..127), truncation to at
+constant and variable left/logical-right/arithmetic-right shifts (0..127), truncation to at
 most 64 bits, loop/join PHIs, and nonvolatile/non-atomic stores into
 pairs of i64 values. Products use 32-bit partial products and explicit carries.
 The pass preserves defined wrapping results and drops optional no-wrap flags.
-Wide loads, division, dynamic shifts, vectors, and wide
-function interfaces remain unsupported. Unsupported producers/consumers are
+Private/defined-constant wide loads and private volatile stores split into
+i64 accesses; device wide loads and atomic wide accesses remain unsupported. Private
+scalar i128 allocas with constant element counts use `[2 x i64]` storage, retaining
+the explicit alignment, count and 16-byte GEP stride. Escaping pointers, unknown
+helper calls, dynamic counts and aggregate wide storage remain unsupported.
+Variable counts at least 128 preserve LLVM poison semantics. Local scalar-i128
+helper interfaces are inlined before splitting; escaping, recursive and external
+wide interfaces are refused. Wide division and vectors remain unsupported. Unsupported producers/consumers are
 rejected; input modules are never mutated. Generic i128 support is not claimed.
+
+LLVM optimization can introduce i24/i40/i48/i56 scalar values. A separate pass
+promotes these to i32/i64 operations, masking results and sign-extending only for
+signed operations. Memory accesses use exactly 3/5/6/7 bytes, including unaligned
+spans; they never read or overwrite the next byte. The pass runs before input
+validation and after optimization. Odd-width storage types, globals, function
+ABIs, vectors, atomics and volatile operations remain outside this profile.
+CPU LLVM execution and guarded GPU tests cover arithmetic, comparisons, shifts,
+PHIs and conversions. Apple does not natively support the tested i24 operation.
+
+`memcmp` and `bcmp` use unsigned byte comparisons and stop at the first mismatch;
+zero-length comparisons read no memory. Unsupported declarations are refused.
 
 Two explicit compiler operations are currently defined:
 
@@ -84,7 +104,11 @@ spaces, allowing the constant null casts introduced by inference to fold.
 The compiler emits AIR 2.4/Metal 3.0 metadata and resource limits. The pinned
 LLVM-21-compatible llvm-downgrade writes bitcode version 14; native LLVM verifies
 that result before the single-function macOS metallib container is constructed.
-Apple's runtime is the compatibility oracle, not LLVM verification alone.
+A final normalization puts constant-expression PHI operands on incoming edges:
+the pinned legacy writer otherwise materializes some of these before the PHI,
+violating SSA grouping. Both instruction and constant-expression address-space
+casts must be resolved before serialization. Apple's runtime remains the
+compatibility oracle; LLVM verification alone does not establish compatibility.
 
 The runtime loads a library, creates a pipeline, allocates shared buffers and
 dispatches synchronously through objc2-metal. It checks declared minimum sizes,
