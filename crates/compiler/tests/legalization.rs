@@ -212,3 +212,36 @@ fn private_volatile_copies_preserve_accesses_and_reject_device_endpoints() {
         assert!(legalize(&module, &interface()).is_err());
     }
 }
+
+#[test]
+fn private_helper_arguments_require_all_callers_to_be_private() {
+    let context = Context::create();
+    let helper = "\ndefine internal void @wipe(ptr %p) { store volatile i8 0, ptr %p\nret void\n}";
+    let safe = source(
+        "%slot = alloca i8\ncall void @wipe(ptr %slot)\n%x = load i8, ptr %slot\nstore i8 %x, ptr %p",
+    ) + helper;
+    let module = parse_ir(&context, safe.as_bytes(), "private-helper").unwrap();
+    let (air, _) = legalize(&module, &interface()).unwrap();
+    assert!(
+        air.print_to_string()
+            .to_string()
+            .contains("store volatile i8")
+    );
+    for invalid in [
+        safe.replace("%x = load i8", "call void @wipe(ptr %p)\n%x = load i8"),
+        safe.replace("define internal void @wipe", "define void @wipe"),
+        safe.replace(
+            "store volatile i8 0, ptr %p",
+            "call void @wipe(ptr %p)\nstore volatile i8 0, ptr %p",
+        ),
+        safe.replace(
+            "%slot = alloca i8",
+            "%slot = alloca i8\n%escape = alloca ptr\nstore ptr @wipe, ptr %escape",
+        ),
+    ] {
+        let module = parse_ir(&context, invalid.as_bytes(), "private-refusal").unwrap();
+        let before = module.print_to_string().to_string();
+        assert!(legalize(&module, &interface()).is_err());
+        assert_eq!(module.print_to_string().to_string(), before);
+    }
+}

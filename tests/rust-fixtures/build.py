@@ -43,11 +43,18 @@ def post_inline(source, output, *, timeout=None):
         source, "-o", output, timeout=timeout,
     )
 
+    # Large inlined hash blocks exceed GVN's default backward scan budget.
+    # Bounded cleanup exposes stored SHA buffer lengths/domain tags before the
+    # unresolved-runtime check. Never replace panic calls or assume their guards.
+    cleanup = ",".join(["sroa,early-cse<memssa>,gvn,instcombine<verify-fixpoint;max-iterations=4>,simplifycfg"] * 3)
+    run("opt", f"-passes=function({cleanup}),globaldce,strip-dead-prototypes,verify",
+        "-memdep-block-scan-limit=10000", output, "-o", output, timeout=timeout)
+
 
 def main():
     global FIXTURE, OUTPUT
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture", choices=["shallenge", "k256", "solana"], default="shallenge")
+    parser.add_argument("--fixture", choices=["shallenge", "k256", "solana", "rsa"], default="shallenge")
     parser.add_argument("--entry")
     parser.add_argument("--consumer-path", type=Path, help="explicit local diagnostic build; records copied consumer source hashes")
     options = parser.parse_args()
@@ -71,6 +78,7 @@ def main():
         "shallenge": "shallenge_sha256_32",
         "k256": "k256_scalar_roundtrip",
         "solana": "consumer_solana_scalar_reduce",
+        "rsa": "consumer_rsa_mul256",
     }
     selected = options.entry or defaults[options.fixture]
     if selected not in interfaces:
@@ -83,6 +91,7 @@ def main():
     source_fixture = FIXTURE
     local_consumer_hashes = None
     consumer_workspace_hashes = None
+    local_vendor_hashes = None
     if options.consumer_path:
         consumer = options.consumer_path.resolve() / "crates/logic"
         source_fixture = output / "local-source/fixture"
@@ -92,6 +101,14 @@ def main():
         shutil.copytree(FIXTURE, source_fixture, dirs_exist_ok=True)
         shutil.copytree(consumer / "src", snapshot / "src", dirs_exist_ok=True)
         shutil.copyfile(consumer / "Cargo.toml", snapshot / "Cargo.toml")
+        vendor = options.consumer_path.resolve() / "vendor/crypto-bigint"
+        if vendor.exists():
+            vendor_snapshot = output / "local-source/vendor/crypto-bigint"
+            shutil.copytree(vendor, vendor_snapshot)
+            consumer_manifest = snapshot / "Cargo.toml"
+            consumer_manifest.write_text(consumer_manifest.read_text().replace('"../../vendor/crypto-bigint"', '"../vendor/crypto-bigint"'))
+            local_vendor_hashes = {str(p.relative_to(vendor)): digest(p) for p in sorted(vendor.rglob("*")) if p.is_file()}
+
         manifest = source_fixture / "Cargo.toml"
         lines = manifest.read_text().splitlines()
         lines = [line for line in lines if not line.startswith("rev = ")]
@@ -99,7 +116,7 @@ def main():
         lines = ['compiler-probes = ["vanity-logic/compiler-probes"]' if line == "compiler-probes = []" else line for line in lines]
         lines = ['consumer = ["dep:vanity-logic"]' if line == "consumer = []" else line for line in lines]
         manifest.write_text("\n".join(lines) + "\n")
-        if options.fixture in ("k256", "solana"):
+        if options.fixture in ("k256", "solana", "rsa"):
             # Match the consumer's existing zeroize fork at its locked commit,
             # rather than accidentally testing a different crates.io release.
             workspace = options.consumer_path.resolve()
@@ -112,6 +129,10 @@ def main():
             with manifest.open("a") as file:
                 file.write('\n[patch.crates-io]\nzeroize = { git = "https://github.com/brandonros/utils", rev = ' + json.dumps(revision) + ' }\n')
             consumer_workspace_hashes = {name: digest(workspace / name) for name in ["Cargo.toml", "Cargo.lock"]}
+        if options.fixture == "rsa":
+            if not vendor.exists():
+                raise RuntimeError("RSA fixtures require the consumer's reviewed crypto-bigint source")
+            manifest.write_text(manifest.read_text().replace('crypto-bigint = { version = "=0.5.5",', 'crypto-bigint = { path = ' + json.dumps(str(vendor_snapshot)) + ', version = "=0.5.5",'))
         run("cargo", "generate-lockfile", "--offline", "--manifest-path", manifest)
         local_consumer_hashes = {str(p.relative_to(snapshot)): digest(p) for p in [snapshot / "Cargo.toml", *sorted((snapshot / "src").rglob("*.rs"))]}
     common = ["--locked", "--manifest-path", source_fixture / "Cargo.toml"]
@@ -211,6 +232,7 @@ def main():
             "archive_sha256": {str(p): digest(p) for p in archives},
             "local_consumer_sources": local_consumer_hashes,
             "consumer_workspace_sha256": consumer_workspace_hashes,
+            "consumer_crypto_bigint_sha256": local_vendor_hashes,
             "fixture_lock_sha256": digest(source_fixture / "Cargo.lock"),
             "artifacts": {name: {"sha256": digest(stage / name), "bytes": (stage / name).stat().st_size}
                           for name in artifacts},

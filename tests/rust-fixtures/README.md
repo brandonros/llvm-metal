@@ -156,9 +156,11 @@ minutes-long ScalarEvolution predicate analysis triggered by Bech32's partly
 unrolled 8-to-5-bit counter loops. Device-side Rust/LLVM vectorization is disabled
 in this producer configuration; Metal still performs its own code generation. These are
 correctness fixtures, not tuned performance builds. It rejects unresolved
-runtime symbols. Only the explicitly declared linear index and device fetch-add
+runtime symbols. Three bounded SROA/GVN cleanup rounds with a 10,000-instruction
+memory scan budget expose SHA buffer lengths across large inlined blocks; this
+eliminates proven dead panic paths without stubbing them. Only the explicitly declared linear index and device fetch-add
 operations are permitted for the batch wrapper. No allocator/panic/runtime stubs
-are supplied. Explicit local k256 and Solana consumer snapshots apply the consumer's
+are supplied. Explicit local k256, Solana and RSA consumer snapshots apply the consumer's
 locked zeroize patch. Passing these fixtures does not establish that
 all vanity-miner dependencies work on stable Rust.
 
@@ -213,3 +215,27 @@ The separate consumer application tests cover batched candidates, patterns,
 errors, winner reporting and CLI execution. `metal_solana_bench` in that worktree
 measures warm throughput with audit disabled, separating GPU, transfers,
 submission, pipeline creation and a single-thread CPU baseline.
+
+## RSA modulus
+
+The `rsa` workspace takes an explicit local consumer snapshot, including its
+reviewed `crypto-bigint` 0.5.5 source and locked zeroize fork. Dependency source
+hashes are recorded alongside the wrappers and producer. Fourteen runtime-input
+fixtures progress through 256/1024-bit multiplication, carry/borrow/comparison,
+shifts/counts, division, Montgomery arithmetic, bounded/full exponentiation,
+prime filtering, HMAC candidate derivation, 2048-bit interval/residue construction,
+range preparation, cursor advancement and single-lane resumable mining.
+
+Native oracles compare against independent BigUint arithmetic and SHA-256/HMAC,
+public prime/pseudoprime answers and the consumer's public test factors. The GPU
+checks full intermediate records, input preservation and guards, including zero
+divisors, full-width carries, shift limits, empty ranges, cursor wrap, misses,
+invalid launch work and retiring successful tasks. The separate consumer tests
+exercise grid dispatch and host key verification/export.
+
+```sh
+nix develop path:.#rust-fixtures --command env \
+  LLVM_METAL_CONSUMER_PATH=/absolute/path/to/vanity-miner-rs-metal \
+  cargo test --locked -p llvm-metal-compiler --test rsa \
+  -- --ignored --nocapture --test-threads=1
+```

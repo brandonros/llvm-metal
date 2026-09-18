@@ -1,11 +1,12 @@
 // Scalar i128 arithmetic used by stock Rust/k256, expressed as (low, high) i64.
-// Deliberately not a general arbitrary-width legalizer: wide loads, PHIs, calls,
+// Deliberately not a general arbitrary-width legalizer: wide loads, general calls,
 // division, dynamic shifts, vectors and ABI changes remain unsupported.
 #include <llvm-c/Core.h>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/InstIterator.h>
+#include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/raw_ostream.h>
 
@@ -41,18 +42,37 @@ struct Lower {
         auto *zero = b.getInt64(0);
         Pair result;
         unsigned op = i->getOpcode();
-        if (op == Instruction::ZExt || op == Instruction::SExt) {
+        if (auto *phi = dyn_cast<PHINode>(i)) {
+            auto *lo = b.CreatePHI(ty, phi->getNumIncomingValues(), "wide.low");
+            auto *hi = b.CreatePHI(ty, phi->getNumIncomingValues(), "wide.high");
+            // Publish placeholders before following backedges in cyclic SSA.
+            values[v] = {lo, hi};
+            erased.push_back(i);
+            for (unsigned n = 0; n < phi->getNumIncomingValues(); ++n) {
+                auto incoming = get(phi->getIncomingValue(n));
+                if (!incoming.first) return {nullptr, nullptr};
+                lo->addIncoming(incoming.first, phi->getIncomingBlock(n));
+                hi->addIncoming(incoming.second, phi->getIncomingBlock(n));
+            }
+            return {lo, hi};
+        } else if (op == Instruction::ZExt || op == Instruction::SExt) {
             Value *x = i->getOperand(0);
             if (!x->getType()->isIntegerTy() || x->getType()->getIntegerBitWidth() > 64)
                 return fail(i);
             auto *lo = op == Instruction::ZExt ? b.CreateZExt(x, ty) : b.CreateSExt(x, ty);
             result = {lo, op == Instruction::ZExt ? zero : b.CreateAShr(lo, 63)};
+        } else if (auto *intrinsic = dyn_cast<IntrinsicInst>(i)) {
+            if (intrinsic->getIntrinsicID() != Intrinsic::bswap) return fail(i);
+            auto a = get(intrinsic->getArgOperand(0));
+            if (!a.first) return a;
+            result = {b.CreateUnaryIntrinsic(Intrinsic::bswap, a.second),
+                      b.CreateUnaryIntrinsic(Intrinsic::bswap, a.first)};
         } else if (op == Instruction::Select) {
             auto a = get(i->getOperand(1)), c = get(i->getOperand(2));
             if (!a.first || !c.first) return {nullptr, nullptr};
             result = {b.CreateSelect(i->getOperand(0), a.first, c.first),
                       b.CreateSelect(i->getOperand(0), a.second, c.second)};
-        } else if (op == Instruction::Add || op == Instruction::Sub || op == Instruction::Mul || op == Instruction::And || op == Instruction::Xor) {
+        } else if (op == Instruction::Add || op == Instruction::Sub || op == Instruction::Mul || op == Instruction::And || op == Instruction::Or || op == Instruction::Xor) {
             auto a = get(i->getOperand(0)), c = get(i->getOperand(1));
             if (!a.first || !c.first) return {nullptr, nullptr};
             if (op == Instruction::Add) {
@@ -67,6 +87,8 @@ struct Lower {
                 result = {b.CreateXor(a.first, c.first), b.CreateXor(a.second, c.second)};
             } else if (op == Instruction::And) {
                 result = {b.CreateAnd(a.first, c.first), b.CreateAnd(a.second, c.second)};
+            } else if (op == Instruction::Or) {
+                result = {b.CreateOr(a.first, c.first), b.CreateOr(a.second, c.second)};
             } else {
                 // Exact 64x64 -> 128 using 32-bit digits. Each partial sum fits
                 // u64; the two cross terms from the high limbs wrap modulo 2^128.

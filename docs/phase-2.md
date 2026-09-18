@@ -273,6 +273,23 @@ requirements; do not remove work while migrating the compiler.
 Source: `crypto/{rsa_prime,rsa_crt}.rs`, `modes/rsa_modulus.rs`,
 `self_test/rsa_modulus/{mod,range_probes}.rs`, `self_test/rsa_pss/mod.rs`.
 
+The RSA modulus milestone is implemented and checked on Apple M5: fourteen
+Rust fixtures (449 guarded CPU/GPU comparisons), followed by the consumer's
+resumable grid kernel, bounded CLI and host-verified RSA-2048 key export. Native
+oracles use independent BigUint arithmetic and HMAC-SHA256. The application
+checks padded multi-lane dispatch, task resume/retirement, misses, invalid work,
+configuration changes and OS-entropy policy. Final acceptance repeats primality
+checks, validates the key, signs/verifies and parses the exported PKCS#8.
+
+This required scalar zero-count lowering, i128 OR/byte-swap/PHIs and conservative
+private-pointer proofs through internal helpers. Producer cleanup uses bounded
+GVN/SROA rounds across large inlined hash blocks. The consumer explicitly vendors
+crypto-bigint 0.5.5 with two equivalent shift-loop bounds rewrites; fixtures copy
+and hash that exact source. No panic stubs or weakened prime checks are used.
+The range result uses a typed error code, avoiding host string pointers in device
+result layouts. Tasks persist semantically across launches through checked host
+readback/upload; transfer avoidance and throughput tuning remain open.
+
 Use two independent size axes: limb width and operation complexity. Small
 numeric inputs inside a U1024 operation do not necessarily produce small IR.
 Diagnostic smaller-width instantiations supplement, not replace, the real widths.

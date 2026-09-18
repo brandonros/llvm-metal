@@ -120,6 +120,8 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
             if function.get_intrinsic_id() == 0
                 || ![
                     "llvm.bswap.",
+                    "llvm.ctlz.",
+                    "llvm.cttz.",
                     "llvm.fshl.",
                     "llvm.fshr.",
                     "llvm.ucmp.",
@@ -230,6 +232,17 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                             )
                         {
                             return Err("integer min/max requires a scalar i8/i16/i32/i64".into());
+                        }
+                    }
+                    if name.starts_with("llvm.ctlz.") || name.starts_with("llvm.cttz.") {
+                        let value = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
+                        if !value.is_int_value()
+                            || !matches!(
+                                value.into_int_value().get_type().get_bit_width(),
+                                8 | 16 | 32 | 64
+                            )
+                        {
+                            return Err("zero counting requires a scalar i8/i16/i32/i64".into());
                         }
                     }
                     if name.starts_with("llvm.abs.") {
@@ -618,6 +631,87 @@ pub fn legalize<'ctx>(
                             inkwell::llvm_sys::core::LLVMReplaceAllUsesWith(
                                 instruction.as_value_ref(),
                                 value.as_value_ref(),
+                            );
+                        }
+                        instruction.erase_from_basic_block();
+                        continue;
+                    }
+                    if name.starts_with("llvm.ctlz.") || name.starts_with("llvm.cttz.") {
+                        let original = instruction
+                            .get_operand(0)
+                            .and_then(|o| o.value())
+                            .unwrap()
+                            .into_int_value();
+                        let ty = original.get_type();
+                        let width = ty.get_bit_width();
+                        let trailing = name.starts_with("llvm.cttz.");
+                        let poison_zero = instruction
+                            .get_operand(1)
+                            .and_then(|o| o.value())
+                            .and_then(|v| v.into_int_value().get_zero_extended_constant())
+                            .ok_or("zero-count poison flag must be constant")?;
+                        builder.position_before(&instruction);
+                        let mut value = original;
+                        let mut count = ty.const_zero();
+                        let mut step = width / 2;
+                        while step != 0 {
+                            let mask = if trailing {
+                                (1u64 << step) - 1
+                            } else {
+                                (u64::MAX >> (64 - width)) << (width - step)
+                            };
+                            let masked = builder
+                                .build_and(value, ty.const_int(mask, false), "count.mask")
+                                .map_err(|e| e.to_string())?;
+                            let empty = builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::EQ,
+                                    masked,
+                                    ty.const_zero(),
+                                    "count.empty",
+                                )
+                                .map_err(|e| e.to_string())?;
+                            let distance = ty.const_int(step as u64, false);
+                            let shifted = if trailing {
+                                builder.build_right_shift(value, distance, false, "count.shift")
+                            } else {
+                                builder.build_left_shift(value, distance, "count.shift")
+                            }
+                            .map_err(|e| e.to_string())?;
+                            value = builder
+                                .build_select(empty, shifted, value, "count.next")
+                                .map_err(|e| e.to_string())?
+                                .into_int_value();
+                            let add = builder
+                                .build_select(empty, distance, ty.const_zero(), "count.distance")
+                                .map_err(|e| e.to_string())?
+                                .into_int_value();
+                            count = builder
+                                .build_int_add(count, add, "count.sum")
+                                .map_err(|e| e.to_string())?;
+                            step /= 2;
+                        }
+                        let zero = builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::EQ,
+                                original,
+                                ty.const_zero(),
+                                "count.zero",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        let on_zero = if poison_zero != 0 {
+                            ty.get_poison()
+                        } else {
+                            ty.const_int(width as u64, false)
+                        };
+                        let result = builder
+                            .build_select(zero, on_zero, count, "count.result")
+                            .map_err(|e| e.to_string())?;
+                        // SAFETY: validated scalar intrinsic and replacement have equal types.
+                        unsafe {
+                            inkwell::llvm_sys::core::LLVMReplaceAllUsesWith(
+                                instruction.as_value_ref(),
+                                result.as_value_ref(),
                             );
                         }
                         instruction.erase_from_basic_block();

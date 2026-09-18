@@ -16,12 +16,13 @@ rejected. A type/opcode passing validation does not establish support for every
 possible combination; library/pipeline creation remains a separate check.
 
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
-three-way comparison, scalar integer absolute value and signed/unsigned min/max,
+three-way comparison, scalar integer absolute value, leading/trailing-zero counts and signed/unsigned min/max,
 nonvolatile memcpy/memset,
 and removable assume/lifetime/alias hints. Unknown externals, inline assembly, indirect calls, mutable globals,
 pointer/integer casts, native LLVM atomics, volatile device memory, floating point,
 and NVVM metadata are rejected. Volatile accesses rooted in private allocas
-are preserved, supporting subtle's local optimization barrier and the consumer's
+are preserved (including internal helper arguments when every direct caller
+provably supplies private storage), supporting subtle's local optimization barrier and the consumer's
 zeroize stores. Constant-size volatile memcpy up to 256 bytes between private
 allocas expands to volatile byte loads/stores. This supplies no
 device synchronization or constant-time execution guarantee. No allocator, panic handler, libdevice,
@@ -42,13 +43,18 @@ tested Apple pipeline; it is not replaced by its possibly poison operand.
 The generic InstCombine passes allow up to four iterations, retaining fixpoint
 verification: expanded dalek scalar products do not converge within one iteration.
 
+Scalar i8/i16/i32/i64 `ctlz` and `cttz` use a logarithmic sequence of
+integer masks, shifts and selects. Zero returns the input width when defined;
+the intrinsic's zero-is-poison flag is preserved. Vectors and i128 counts
+are rejected. GPU tests cover zero, boundaries and every input bit.
+
 A narrow scalar i128 pass lowers zero/sign extension from at most 64 bits,
-addition/subtraction, multiplication, bitwise AND/XOR, comparisons, selection,
+addition/subtraction, multiplication, bitwise AND/OR/XOR, byte swap, comparisons, selection,
 constant left/logical-right/arithmetic-right shifts (0..127), truncation to at
-most 64 bits, and nonvolatile/non-atomic stores into
+most 64 bits, loop/join PHIs, and nonvolatile/non-atomic stores into
 pairs of i64 values. Products use 32-bit partial products and explicit carries.
 The pass preserves defined wrapping results and drops optional no-wrap flags.
-Wide loads, division, dynamic shifts, PHIs, vectors, and wide
+Wide loads, division, dynamic shifts, vectors, and wide
 function interfaces remain unsupported. Unsupported producers/consumers are
 rejected; input modules are never mutated. Generic i128 support is not claimed.
 

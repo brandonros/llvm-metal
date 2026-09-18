@@ -72,8 +72,33 @@ static void foldNullCasts(llvm::Function &function) {
                     operand.set(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(cast->getType())));
 }
 
+static bool privatePointer(llvm::Value *pointer, llvm::SmallPtrSetImpl<llvm::Value *> &visiting) {
+    pointer = llvm::getUnderlyingObject(pointer);
+    if (llvm::isa<llvm::AllocaInst>(pointer)) return true;
+    auto *argument = llvm::dyn_cast<llvm::Argument>(pointer);
+    if (!argument || !argument->getParent()->hasLocalLinkage() ||
+        !visiting.insert(argument).second) return false;
+    // A helper's pointer is private only when every use is a direct call and
+    // every caller supplies private storage. Unknown callers/recursion fail closed.
+    auto *function = argument->getParent();
+    bool called = false, valid = true;
+    for (auto &use : function->uses()) {
+        auto *call = llvm::dyn_cast<llvm::CallBase>(use.getUser());
+        if (!call || !call->isCallee(&use) || call->getCalledFunction() != function ||
+            argument->getArgNo() >= call->arg_size() ||
+            !privatePointer(call->getArgOperand(argument->getArgNo()), visiting)) {
+            valid = false;
+            break;
+        }
+        called = true;
+    }
+    visiting.erase(argument);
+    return called && valid;
+}
+
 static bool privatePointer(llvm::Value *pointer) {
-    return llvm::isa<llvm::AllocaInst>(llvm::getUnderlyingObject(pointer));
+    llvm::SmallPtrSet<llvm::Value *, 8> visiting;
+    return privatePointer(pointer, visiting);
 }
 
 extern "C" bool LLVMMetalPrivateMemory(LLVMValueRef value) {

@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "entry": "consumer_rsa_mul256",
+  "calling_convention": "C",
+  "invocations": 1,
+  "aliasing": "disjoint buffers",
+  "arguments": [
+    {
+      "name": "input",
+      "kind": "buffer",
+      "access": "read",
+      "bytes": 64,
+      "alignment": 1
+    },
+    {
+      "name": "output",
+      "kind": "buffer",
+      "access": "write",
+      "bytes": 64,
+      "alignment": 1
+    }
+  ]
+}
