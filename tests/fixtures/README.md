@@ -13,11 +13,22 @@ When a Rust-generated pattern matters, retain the minimal Rust source and
 reproduction command alongside its captured IR. Do not make ordinary tests
 depend on recompiling with an arbitrary installed rustc.
 
-The fixtures in this directory are hand-written for this project; they are not extracted from
+The original `positive/` fixtures are hand-written for this project; they are not extracted from
 vanity-miner's compiler output. Their expected values live in
 `crates/compiler/tests/semantics.rs` as Rust reference operations and fixed
 answers. A round-trip text comparison checks preservation, not correctness by
 itself. No large application artifacts or private mining inputs belong here.
+
+`optimizer/bech32-counters.ll` is a 71-line reduction of the consumer's real
+Bech32 conversion loops, with source/toolchain provenance in its header. It was
+reduced with LLVM 21.1.8 `llvm-reduce` using a slow second-O3 invocation as the
+interestingness condition, then repaired to use a valid output pointer and
+terminate. Its contract is only the remaining counter loops and three byte
+writes, not Bech32 encoding. `crates/compiler/tests/optimizer.rs` checks guarded
+native execution before/after the actual producer cleanup and imposes a
+10-second deadline. The old cleanup exceeds that deadline; the ordered cleanup
+takes a fraction of a second. Full consumer encoder fixtures remain the GPU
+acceptance test.
 
 ## What runs today
 

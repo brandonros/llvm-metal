@@ -9,6 +9,7 @@ import shutil
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import tomllib
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -18,17 +19,29 @@ TARGET = "nvptx64-nvidia-cuda"
 COMMANDS = []
 
 
-def run(*args, capture=False):
+def run(*args, capture=False, timeout=None):
     command = [str(arg) for arg in args]
     COMMANDS.append(command)
     return subprocess.run(
-        command, cwd=ROOT, check=True, text=True,
+        command, cwd=ROOT, check=True, text=True, timeout=timeout,
         stdout=subprocess.PIPE if capture else None,
     ).stdout
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def post_inline(source, output, *, timeout=None):
+    # Canonicalize counters and unroll before O3's loop pipeline. Running O3
+    # directly on the partly unrolled Bech32 8-to-5-bit loops makes its
+    # ScalarEvolution predicate analysis take minutes (see optimizer fixture).
+    run(
+        "opt", "-passes=function(loop-simplify,lcssa,loop(indvars),loop-unroll,"
+        "sroa,instcombine,simplifycfg),default<O3>,globaldce,strip-dead-prototypes,verify",
+        "-unroll-threshold=1000", "-vectorize-slp=false", "-vectorize-loops=false",
+        source, "-o", output, timeout=timeout,
+    )
 
 
 def main():
@@ -107,12 +120,16 @@ def main():
         common += ["--features", "compiler-probes"]
     run("cargo", "test", *common, "--release", "--target-dir", OUTPUT / "cargo-host")
     run("cargo", "build", *common, "--release", "--bin", "oracle", "--target-dir", OUTPUT / "cargo-host")
+    timings = {}
+    start = time.perf_counter()
     messages = run(
         "cargo", "rustc", *common, "--release", "--lib", "--target", TARGET,
         "--config", f'target.{TARGET}.rustflags=["-Cno-vectorize-slp", "-Cno-vectorize-loops"]',
         "--target-dir", OUTPUT / "cargo-device", "--message-format=json",
         "--", "--emit=llvm-bc", "-Cembed-bitcode=yes", capture=True,
     )
+    timings["rustc_seconds"] = time.perf_counter() - start
+    start = time.perf_counter()
     # Use Cargo's current artifact list, never a glob that can pick up old builds.
     archives = []
     root_archive = None
@@ -150,6 +167,8 @@ def main():
         if not modules:
             raise RuntimeError("Cargo's archives contained no LLVM modules")
         run("llvm-link", *modules, "-o", stage / "linked.bc")
+        timings["link_seconds"] = time.perf_counter() - start
+        start = time.perf_counter()
         run(
             "opt", "-passes=internalize,globaldce,default<O3>,globaldce,strip-dead-prototypes,verify",
             "-inline-threshold=10000",
@@ -157,15 +176,13 @@ def main():
             f"-internalize-public-api-list={entry}", stage / "linked.bc",
             "-o", stage / "inlined.bc",
         )
+        timings["inline_seconds"] = time.perf_counter() - start
+        start = time.perf_counter()
         # Run loop cleanup after the large cross-crate inline, using normal
         # inlining heuristics. Fixed SEC1 byte-selection loops then expose their
         # constant tag bits, allowing unreachable panic/formatting paths to die.
-        run(
-            "opt", "-passes=default<O3>,globaldce,strip-dead-prototypes,verify",
-            "-unroll-threshold=1000", "-vectorize-slp=false", "-vectorize-loops=false",
-            stage / "inlined.bc",
-            "-o", stage / "kernel.bc",
-        )
+        post_inline(stage / "inlined.bc", stage / "kernel.bc")
+        timings["post_inline_seconds"] = time.perf_counter() - start
         unresolved = run("llvm-nm", "--undefined-only", stage / "kernel.bc", capture=True).strip()
         device_operations = {"llvm_metal.linear_thread_index", "llvm_metal.atomic_add_device_u32"}
         undefined = [line.split()[-1] for line in unresolved.splitlines()]
@@ -193,6 +210,7 @@ def main():
             "artifacts": {name: {"sha256": digest(stage / name), "bytes": (stage / name).stat().st_size}
                           for name in artifacts},
             "commands": COMMANDS,
+            "timings": timings,
             "checks": {"cpu_known_answers": "passed", "llvm_verify": "passed",
                        "device_operations": undefined, "undefined_runtime_symbols": [],
                        "metal_execution": "not performed by this producer"},

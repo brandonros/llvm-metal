@@ -206,9 +206,14 @@ Bitcoin now also has separate production RIPEMD-160, HASH160, Bech32 P2WPKH and
 complete checked-address fixtures: 716 guarded CPU/GPU comparisons on Apple M5.
 Host leaf tests use independent RustCrypto hashes and the `bech32` encoder;
 complete-address tests retain the consumer's known vector and invalid-key cases.
-These required no new AIR lowering. The unchanged stock-LLVM producer's second
-O3 pass takes several minutes on the Bech32 composition; compile-time tuning
-remains open. See 2.7 for the Ethereum application milestone.
+The initial milestone required no new AIR lowering. Its minutes-long second O3
+pass was subsequently reduced to Bech32 counter loops: canonicalizing counters
+and unrolling before O3 avoids the expensive ScalarEvolution predicate analysis.
+The faster ordering exposes `llvm.abs.i8` in k256, now lowered generically with
+minimum-integer semantics preserved. The producer records separate stage timings;
+the observed Bitcoin frontend fell from about 436 seconds to 10–13 seconds with
+matching Cargo artifacts reused and LLVM linking/optimization rerun. Cold Metal
+pipeline creation is separate. See 2.7 for the Ethereum application milestone.
 
 The isolated consumer Metal branch also runs the production Bitcoin candidate
 kernel and CLI. Tests compare all lanes across partial grids, seed widths and

@@ -148,10 +148,13 @@ and runtime tests subsequently establish AIR/GPU correctness.
 
 `build.py` takes archive paths from the current Cargo build, extracts LLVM object
 members (excluding Rust metadata), links them, internalizes other exports and
-runs LLVM O3 with a higher inlining threshold before pruning. A second O3 pass
-with normal inlining and an unroll threshold of 1000 exposes fixed-size SEC1
-encoding invariants. Device-side Rust/LLVM vectorization is disabled in this
-producer configuration; Metal still performs its own code generation. These are
+runs LLVM O3 with a higher inlining threshold before pruning. Post-inline cleanup
+first canonicalizes loop counters (`loop-simplify,lcssa,loop(indvars)`), unrolls,
+then runs SROA/InstCombine/SimplifyCFG before a second O3 pass. The unroll threshold
+is 1000 to expose fixed-size SEC1 encoding invariants. This ordering avoids the
+minutes-long ScalarEvolution predicate analysis triggered by Bech32's partly
+unrolled 8-to-5-bit counter loops. Device-side Rust/LLVM vectorization is disabled
+in this producer configuration; Metal still performs its own code generation. These are
 correctness fixtures, not tuned performance builds. It rejects unresolved
 runtime symbols. Only the explicitly declared linear index and device fetch-add
 operations are permitted for the batch wrapper. No allocator/panic/runtime stubs
@@ -162,7 +165,8 @@ all vanity-miner dependencies work on stable Rust.
 Files live under `target/rust-fixtures/shallenge/`, with named subdirectories for
 nondefault entries: `kernel.bc`, `kernel.ll`, `kernel.interface.json`, and
 `kernel.build.json`. Provenance includes versions, commands, source/lock/archive
-hashes, selected device operations and output hashes. Each invocation relinks and
+hashes, selected device operations, output hashes and separate Rust compilation,
+archive extraction/linking, initial O3 and post-inline timings. Each invocation relinks and
 verifies current artifacts even when Cargo reuses cached compilation. This is a
 reproduction recipe, not a byte-identical-build claim across checkout paths.
 
@@ -171,3 +175,13 @@ Source wrappers, interface descriptions and lockfiles belong in Git; ordinary
 binary artifacts do not. Promote a small captured IR/bitcode file only when its
 exact shape/encoding is needed for a regression, following the
 [fixture policy](../fixtures/README.md).
+
+The reduced Bech32 counter regression calls each producer's real `post_inline`
+helper with a 10-second deadline, then checks native writes and guard bytes before
+and after optimization. It does not substitute for complete encoder GPU tests:
+
+```sh
+nix develop path:.#rust-fixtures --command env \
+  LLVM_METAL_CONSUMER_PATH=/absolute/path/to/vanity-miner-rs-metal cargo test --locked \
+  -p llvm-metal-compiler --test optimizer -- --ignored --nocapture
+```

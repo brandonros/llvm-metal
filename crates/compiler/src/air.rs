@@ -123,6 +123,7 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                     "llvm.fshl.",
                     "llvm.fshr.",
                     "llvm.ucmp.",
+                    "llvm.abs.",
                     "llvm.lifetime.start",
                     "llvm.lifetime.end",
                     "llvm.memcpy.",
@@ -211,6 +212,17 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                         .get_called_fn_value()
                         .unwrap();
                     let name = callee.get_name().to_string_lossy();
+                    if name.starts_with("llvm.abs.") {
+                        let value = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
+                        if !value.is_int_value()
+                            || !matches!(
+                                value.into_int_value().get_type().get_bit_width(),
+                                8 | 16 | 32 | 64
+                            )
+                        {
+                            return Err("absolute value requires a scalar i8/i16/i32/i64".into());
+                        }
+                    }
                     if name.starts_with("llvm.memcpy.") || name.starts_with("llvm.memset.") {
                         let volatile = instruction
                             .get_operand(3)
@@ -550,6 +562,47 @@ pub fn legalize<'ctx>(
                     .get_called_fn_value()
                 {
                     let name = function.get_name().to_string_lossy();
+                    if name.starts_with("llvm.abs.") {
+                        let value = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
+                        if !value.is_int_value() {
+                            return Err("vector absolute value is unsupported".into());
+                        }
+                        let value = value.into_int_value();
+                        let poison_min = instruction
+                            .get_operand(1)
+                            .and_then(|o| o.value())
+                            .and_then(|v| v.into_int_value().get_zero_extended_constant())
+                            .ok_or("absolute-value poison flag must be constant")?;
+                        builder.position_before(&instruction);
+                        let negative = builder
+                            .build_int_compare(
+                                inkwell::IntPredicate::SLT,
+                                value,
+                                value.get_type().const_zero(),
+                                "abs.negative",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        // llvm.abs(INT_MIN, false) wraps to INT_MIN; true makes
+                        // that case poison. NSW negation preserves this distinction.
+                        let negated = if poison_min != 0 {
+                            builder.build_int_nsw_neg(value, "abs.negated")
+                        } else {
+                            builder.build_int_neg(value, "abs.negated")
+                        }
+                        .map_err(|e| e.to_string())?;
+                        let result = builder
+                            .build_select(negative, negated, value, "abs.value")
+                            .map_err(|e| e.to_string())?;
+                        // SAFETY: the scalar replacement has the intrinsic's type.
+                        unsafe {
+                            inkwell::llvm_sys::core::LLVMReplaceAllUsesWith(
+                                instruction.as_value_ref(),
+                                result.as_value_ref(),
+                            );
+                        }
+                        instruction.erase_from_basic_block();
+                        continue;
+                    }
                     if name.starts_with("llvm.ucmp.") {
                         let a = instruction
                             .get_operand(0)

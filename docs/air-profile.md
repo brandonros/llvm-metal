@@ -16,8 +16,8 @@ rejected. A type/opcode passing validation does not establish support for every
 possible combination; library/pipeline creation remains a separate check.
 
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
-three-way comparison, nonvolatile memcpy/memset, and removable lifetime/alias
-hints. Unknown externals, inline assembly, indirect calls, mutable globals,
+three-way comparison, scalar integer absolute value, nonvolatile memcpy/memset,
+and removable lifetime/alias hints. Unknown externals, inline assembly, indirect calls, mutable globals,
 pointer/integer casts, native LLVM atomics, volatile device memory, floating point,
 and NVVM metadata are rejected. Volatile accesses rooted in private allocas
 are preserved, supporting subtle's local optimization barrier and the consumer's
@@ -25,6 +25,13 @@ zeroize stores. Constant-size volatile memcpy up to 256 bytes between private
 allocas expands to volatile byte loads/stores. This supplies no
 device synchronization or constant-time execution guarantee. No allocator, panic handler, libdevice,
 barrier, threadgroup memory or general GPU runtime is supplied.
+
+`llvm.abs` is lowered for scalar i8/i16/i32/i64 using signed comparison,
+negation and selection. A false `is_int_min_poison` flag preserves wrapping
+INT_MIN; true uses NSW negation to preserve its poison case, following
+[LLVM's intrinsic contract](https://llvm.org/docs/LangRef.html#llvm-abs-intrinsic).
+Vector and wide absolute values remain unsupported. GPU tests cover every byte
+value and wider signed boundaries; poison cases are checked structurally.
 
 A narrow scalar i128 pass lowers zero/sign extension from at most 64 bits,
 addition/subtraction, multiplication, bitwise AND/XOR, comparisons, selection,
