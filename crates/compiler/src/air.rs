@@ -5,7 +5,7 @@ use inkwell::{
     module::{Linkage, Module},
     targets::{TargetData, TargetTriple},
     types::{AnyTypeEnum, BasicTypeEnum},
-    values::{AsValueRef, InstructionOpcode},
+    values::{AnyValue, AsValueRef, InstructionOpcode},
 };
 use llvm_metal_abi::{Access, Dispatch, KernelInterface, MetalBindings};
 use std::ffi::{CStr, CString};
@@ -167,6 +167,7 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                         | Br
                         | Switch
                         | Return
+                        | Unreachable
                         | Call
                         | Alloca
                         | Load
@@ -263,7 +264,7 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                             .and_then(|v| v.into_int_value().get_zero_extended_constant());
                         if volatile != Some(0) {
                             return Err(
-                                "volatile memory intrinsics require explicit legalization".into()
+                                format!("volatile memory intrinsics require explicit legalization: {}", instruction.print_to_string())
                             );
                         }
                     }
@@ -852,6 +853,52 @@ pub fn legalize<'ctx>(
             ));
         }
     }
+    // Constant-expression casts also reach the legacy writer. Walk complete
+    // constant operand trees (including aggregate initializers), not just LLVM
+    // instructions, so an unresolved pointer cannot hide inside a GEP or select.
+    {
+        use inkwell::llvm_sys::{LLVMOpcode, core::*};
+        let mut pending = Vec::new();
+        for block in entry.get_basic_blocks() {
+            for instruction in block.get_instructions() {
+                // SAFETY: live verified instruction and bounded operand indices.
+                unsafe {
+                    for i in 0..LLVMGetNumOperands(instruction.as_value_ref()) {
+                        pending.push(LLVMGetOperand(instruction.as_value_ref(), i as u32));
+                    }
+                }
+            }
+        }
+        for global in module.get_globals() {
+            if let Some(initializer) = global.get_initializer() {
+                pending.push(initializer.as_value_ref());
+            }
+        }
+        let mut seen = std::collections::HashSet::new();
+        while let Some(value) = pending.pop() {
+            // SAFETY: operands remain live; type tests precede constant-only
+            // APIs. Stop at globals/functions rather than traversing IR cycles.
+            unsafe {
+                if !seen.insert(value as usize)
+                    || LLVMIsAConstant(value).is_null()
+                    || !LLVMIsAGlobalValue(value).is_null()
+                {
+                    continue;
+                }
+                if !LLVMIsAConstantExpr(value).is_null()
+                    && LLVMGetConstOpcode(value) == LLVMOpcode::LLVMAddrSpaceCast
+                {
+                    let diagnostic = LLVMPrintValueToString(value);
+                    let text = CStr::from_ptr(diagnostic).to_string_lossy().into_owned();
+                    LLVMDisposeMessage(diagnostic);
+                    return Err(format!("constant pointer escaped address-space inference: {text}"));
+                }
+                for i in 0..LLVMGetNumOperands(value) {
+                    pending.push(LLVMGetOperand(value, i as u32));
+                }
+            }
+        }
+    }
     let n = |x| context.i32_type().const_int(x, false).into();
     let s = |x| context.metadata_string(x).into();
     let mut arguments = Vec::new();
@@ -931,6 +978,14 @@ pub fn legalize<'ctx>(
                 &context.metadata_node(&[n(7), s(name), n(limit)]),
             )
             .map_err(|e| e.to_string())?;
+    }
+    unsafe extern "C" {
+        fn LLVMMetalPreparePhiConstants(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+    }
+    // SAFETY: final verified-shape module; LLVM places constant-expression PHI
+    // operands on their incoming edges before the legacy writer handles them.
+    unsafe {
+        LLVMMetalPreparePhiConstants(module.as_mut_ptr());
     }
     module.verify().map_err(|e| e.to_string())?;
     Ok((module, bindings))

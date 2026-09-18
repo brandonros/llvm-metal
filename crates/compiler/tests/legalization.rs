@@ -158,7 +158,6 @@ fn wide_unsupported_operations_fail_without_mutating_input() {
         "store volatile i128 1, ptr %p",
         "store atomic i128 1, ptr %p seq_cst, align 16",
         "%x = load i64, ptr %p\n%w = zext i64 %x to i128\n%r = udiv i128 %w, 3\nstore i128 %r, ptr %p",
-        "%x = load i64, ptr %p\n%w = zext i64 %x to i128\n%r = lshr i128 123, %w\nstore i128 %r, ptr %p",
         "%x = load i64, ptr %p\n%w = zext i64 %x to i128\n%r = lshr i128 %w, 128\nstore i128 %r, ptr %p",
     ] {
         let module = parse_ir(&context, source(body).as_bytes(), "wide-refusal").unwrap();
@@ -203,10 +202,10 @@ fn private_volatile_copies_preserve_accesses_and_reject_device_endpoints() {
     for copy in [
         "call void @llvm.memcpy.p0.p0.i64(ptr %p, ptr %a, i64 4, i1 true)",
         "call void @llvm.memcpy.p0.p0.i64(ptr %b, ptr %p, i64 4, i1 true)",
-        "call void @llvm.memcpy.p0.p0.i64(ptr %b, ptr %a, i64 257, i1 true)",
+        "call void @llvm.memcpy.p0.p0.i64(ptr %b, ptr %a, i64 4097, i1 true)",
     ] {
         let text = source(&format!(
-            "%a = alloca [257 x i8]\n%b = alloca [257 x i8]\n{copy}"
+            "%a = alloca [4097 x i8]\n%b = alloca [4097 x i8]\n{copy}"
         )) + declaration;
         let module = parse_ir(&context, text.as_bytes(), "unsupported-copy").unwrap();
         assert!(legalize(&module, &interface()).is_err());
@@ -244,4 +243,13 @@ fn private_helper_arguments_require_all_callers_to_be_private() {
         assert!(legalize(&module, &interface()).is_err());
         assert_eq!(module.print_to_string().to_string(), before);
     }
+}
+
+#[test]
+fn existing_unreachable_terminators_preserve_source_undefined_behavior() {
+    let context = Context::create();
+    let text = source("%x = load i32, ptr %p\n%valid = icmp ult i32 %x, 3\nbr i1 %valid, label %done, label %invalid\ninvalid:\nunreachable\ndone:\nstore i32 42, ptr %p");
+    let module = parse_ir(&context, text.as_bytes(), "unreachable").unwrap();
+    let (air, _) = legalize(&module, &interface()).unwrap();
+    air.verify().unwrap();
 }

@@ -1,14 +1,14 @@
+// Address-space inference and AIR pointer fixups, in their required order.
 // LLVM's C API cannot select the flat address space for this existing pass.
 // AIR has no upstream TargetMachine, so explicitly set generic address space 0.
-#include <llvm-c/Core.h>
-#include <llvm/IR/Module.h>
-#include <llvm/IR/Metadata.h>
-#include <llvm/Passes/PassBuilder.h>
-#include <llvm/Transforms/Scalar/InferAddressSpaces.h>
+#include "pointer_provenance.h"
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/Analysis/ValueTracking.h>
-#include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/InstIterator.h>
+#include <llvm/IR/Module.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Transforms/Scalar/InferAddressSpaces.h>
 
 // LLVM 21's inference handles nullable selects but joins a PHI's flat null/
 // undef inputs with its device inputs as "flat". Give such PHIs an explicit
@@ -72,64 +72,19 @@ static void foldNullCasts(llvm::Function &function) {
                     operand.set(llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(cast->getType())));
 }
 
-static bool privatePointer(llvm::Value *pointer, llvm::SmallPtrSetImpl<llvm::Value *> &visiting) {
-    pointer = llvm::getUnderlyingObject(pointer);
-    if (llvm::isa<llvm::AllocaInst>(pointer)) return true;
-    auto *argument = llvm::dyn_cast<llvm::Argument>(pointer);
-    if (!argument || !argument->getParent()->hasLocalLinkage() ||
-        !visiting.insert(argument).second) return false;
-    // A helper's pointer is private only when every use is a direct call and
-    // every caller supplies private storage. Unknown callers/recursion fail closed.
-    auto *function = argument->getParent();
-    bool called = false, valid = true;
-    for (auto &use : function->uses()) {
-        auto *call = llvm::dyn_cast<llvm::CallBase>(use.getUser());
-        if (!call || !call->isCallee(&use) || call->getCalledFunction() != function ||
-            argument->getArgNo() >= call->arg_size() ||
-            !privatePointer(call->getArgOperand(argument->getArgNo()), visiting)) {
-            valid = false;
-            break;
-        }
-        called = true;
-    }
-    visiting.erase(argument);
-    return called && valid;
-}
-
-static bool privatePointer(llvm::Value *pointer) {
-    llvm::SmallPtrSet<llvm::Value *, 8> visiting;
-    return privatePointer(pointer, visiting);
-}
-
-extern "C" bool LLVMMetalPrivateMemory(LLVMValueRef value) {
-    auto *instruction = llvm::unwrap(value);
-    if (auto *load = llvm::dyn_cast<llvm::LoadInst>(instruction))
-        return privatePointer(load->getPointerOperand());
-    if (auto *store = llvm::dyn_cast<llvm::StoreInst>(instruction))
-        return privatePointer(store->getPointerOperand());
-    return false;
-}
-
-// Preserve zeroize's volatile aggregate writes as individual volatile accesses.
-// Only bounded copies entirely between private allocations are admitted.
-extern "C" void LLVMMetalExpandPrivateVolatileCopies(LLVMModuleRef module) {
-    llvm::SmallVector<llvm::MemCpyInst *, 8> copies;
-    for (auto &function : *llvm::unwrap(module))
-        for (auto &instruction : llvm::instructions(function))
-            if (auto *copy = llvm::dyn_cast<llvm::MemCpyInst>(&instruction))
-                if (copy->isVolatile()) copies.push_back(copy);
-    for (auto *copy : copies) {
-        auto *length = llvm::dyn_cast<llvm::ConstantInt>(copy->getLength());
-        if (!length || length->getValue().ugt(256) ||
-            !privatePointer(copy->getSource()) || !privatePointer(copy->getDest())) continue;
-        llvm::IRBuilder<> builder(copy);
-        for (uint64_t i = 0; i < length->getZExtValue(); ++i) {
-            auto *source = builder.CreateGEP(builder.getInt8Ty(), copy->getSource(), builder.getInt64(i));
-            auto *destination = builder.CreateGEP(builder.getInt8Ty(), copy->getDest(), builder.getInt64(i));
-            auto *value = builder.CreateAlignedLoad(builder.getInt8Ty(), source, llvm::Align(1), true);
-            builder.CreateAlignedStore(value, destination, llvm::Align(1), true);
-        }
-        copy->eraseFromParent();
+// LLVM's generic inference deliberately leaves volatile loads untouched. These
+// loads already refer to a reviewed, defined immutable global in Metal constant
+// storage; retain that pointer's address space instead of casting it to private.
+static void typeConstantVolatileLoads(llvm::Function &function) {
+    for (auto &instruction : llvm::instructions(function)) {
+        auto *load = llvm::dyn_cast<llvm::LoadInst>(&instruction);
+        if (!load || !load->isVolatile() || load->isAtomic()) continue;
+        auto *cast = llvm::dyn_cast<llvm::ConstantExpr>(load->getPointerOperand());
+        if (!cast || cast->getOpcode() != llvm::Instruction::AddrSpaceCast ||
+            cast->getType()->getPointerAddressSpace() != 0) continue;
+        auto *source = cast->getOperand(0);
+        if (source->getType()->getPointerAddressSpace() == 2 && llvm_metal::constantPointer(source))
+            load->setOperand(llvm::LoadInst::getPointerOperandIndex(), source);
     }
 }
 
@@ -150,19 +105,7 @@ extern "C" void LLVMMetalInferAddressSpaces(LLVMModuleRef module) {
         if (!function.isDeclaration()) {
             typeNullablePhis(function);
             passes.run(function, functions);
+            typeConstantVolatileLoads(function);
             foldNullCasts(function);
         }
-}
-
-extern "C" void LLVMMetalRemoveCodegenFlags(LLVMModuleRef module) {
-    auto *flags = llvm::unwrap(module)->getNamedMetadata("llvm.module.flags");
-    if (!flags) return;
-    llvm::SmallVector<llvm::MDNode *, 8> retained;
-    for (auto *node : flags->operands()) {
-        auto *name = llvm::dyn_cast<llvm::MDString>(node->getOperand(1));
-        if (!name || (name->getString() != "PIC Level" && name->getString() != "PIE Level"))
-            retained.push_back(node);
-    }
-    flags->clearOperands();
-    for (auto *node : retained) flags->addOperand(node);
 }

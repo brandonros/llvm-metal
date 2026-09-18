@@ -1,6 +1,6 @@
 // Scalar i128 arithmetic used by stock Rust/k256, expressed as (low, high) i64.
-// Deliberately not a general arbitrary-width legalizer: wide loads, general calls,
-// division, dynamic shifts, vectors and ABI changes remain unsupported.
+// Deliberately not a general arbitrary-width legalizer: device wide loads, general calls,
+// division, vectors and ABI changes remain unsupported.
 #include <llvm-c/Core.h>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
@@ -9,6 +9,8 @@
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/raw_ostream.h>
+
+#include "pointer_provenance.h"
 
 using namespace llvm;
 namespace {
@@ -25,6 +27,80 @@ struct Lower {
             v->print(out);
         }
         return {nullptr, nullptr};
+    }
+
+    bool normalizePrivateStorage(Module &module) {
+        SmallVector<AllocaInst *, 8> allocations;
+        for (auto &function : module)
+            for (auto &instruction : instructions(function))
+                if (auto *allocation = dyn_cast<AllocaInst>(&instruction))
+                    if (allocation->getAllocatedType()->isIntegerTy(128))
+                        allocations.push_back(allocation);
+        for (auto *allocation : allocations) {
+            auto *storage = ArrayType::get(Type::getInt64Ty(module.getContext()), 2);
+            const auto &layout = module.getDataLayout();
+            if (allocation->getAddressSpace() != 0 ||
+                !isa<ConstantInt>(allocation->getArraySize()) ||
+                allocation->getArraySize()->getType()->getIntegerBitWidth() > 64 ||
+                layout.getTypeAllocSize(allocation->getAllocatedType()) != 16 ||
+                layout.getTypeAllocSize(storage) != 16) {
+                fail(allocation);
+                return false;
+            }
+            // Opaque pointers do not describe the allocation's element type.
+            // Check the complete use chain before changing its storage type;
+            // unknown calls, returned/stored pointers and mixed pointer merges
+            // are not an extension of the supported private-memory contract.
+            SmallVector<Value *, 8> pending{allocation};
+            SmallPtrSet<Value *, 16> seen;
+            SmallVector<GetElementPtrInst *, 8> wideGeps;
+            while (!pending.empty()) {
+                auto *pointer = pending.pop_back_val();
+                if (!seen.insert(pointer).second) continue;
+                for (auto *user : pointer->users()) {
+                    if (auto *load = dyn_cast<LoadInst>(user)) {
+                        if (load->getPointerOperand() == pointer) continue;
+                    } else if (auto *store = dyn_cast<StoreInst>(user)) {
+                        if (store->getPointerOperand() == pointer &&
+                            store->getValueOperand() != pointer) continue;
+                    } else if (auto *gep = dyn_cast<GetElementPtrInst>(user)) {
+                        if (gep->getPointerOperand() == pointer) {
+                            if (gep->getSourceElementType()->isIntegerTy(128)) {
+                                if (gep->getNumIndices() != 1) { fail(gep); return false; }
+                                wideGeps.push_back(gep);
+                            }
+                            pending.push_back(gep);
+                            continue;
+                        }
+                    } else if (auto *cast = dyn_cast<BitCastInst>(user)) {
+                        if (cast->getType()->isPointerTy()) {
+                            pending.push_back(cast);
+                            continue;
+                        }
+                    } else if (auto *intrinsic = dyn_cast<IntrinsicInst>(user)) {
+                        switch (intrinsic->getIntrinsicID()) {
+                            case Intrinsic::lifetime_start:
+                            case Intrinsic::lifetime_end:
+                            case Intrinsic::memcpy:
+                            case Intrinsic::memset:
+                                continue;
+                            default: break;
+                        }
+                    }
+                    fail(user);
+                    return false;
+                }
+            }
+            // Keep array count, address space, alignment and alloca flags. Each
+            // source i128 and each replacement [2 x i64] occupies exactly 16
+            // bytes, so indexed accesses preserve their original byte offsets.
+            allocation->setAllocatedType(storage);
+            for (auto *gep : wideGeps) {
+                gep->setSourceElementType(storage);
+                gep->setResultElementType(storage);
+            }
+        }
+        return true;
     }
 
     Pair get(Value *v) {
@@ -55,6 +131,13 @@ struct Lower {
                 hi->addIncoming(incoming.second, phi->getIncomingBlock(n));
             }
             return {lo, hi};
+        } else if (auto *load = dyn_cast<LoadInst>(i)) {
+            if (load->isAtomic() || !LLVMMetalPrivateMemory(wrap(load))) return fail(i);
+            auto *p = load->getPointerOperand();
+            result = {
+                b.CreateAlignedLoad(ty, p, load->getAlign(), load->isVolatile()),
+                b.CreateAlignedLoad(ty, b.CreateGEP(b.getInt8Ty(), p, b.getInt64(8)),
+                                    commonAlignment(load->getAlign(), 8), load->isVolatile())};
         } else if (op == Instruction::ZExt || op == Instruction::SExt) {
             Value *x = i->getOperand(0);
             if (!x->getType()->isIntegerTy() || x->getType()->getIntegerBitWidth() > 64)
@@ -105,9 +188,36 @@ struct Lower {
             }
         } else if (op == Instruction::LShr || op == Instruction::AShr || op == Instruction::Shl) {
             auto *count = dyn_cast<ConstantInt>(i->getOperand(1));
-            if (!count || count->getValue().uge(128)) return fail(i);
             auto a = get(i->getOperand(0));
             if (!a.first) return a;
+            if (!count) {
+                auto n = get(i->getOperand(1));
+                if (!n.first) return n;
+                auto *valid = b.CreateAnd(b.CreateICmpEQ(n.second, zero), b.CreateICmpULT(n.first, b.getInt64(128)));
+                auto *small = b.CreateICmpULT(n.first, b.getInt64(64));
+                auto *k = b.CreateAnd(n.first, b.getInt64(63));
+                auto *inverse = b.CreateAnd(b.CreateSub(zero, k), b.getInt64(63));
+                auto *nonzero = b.CreateICmpNE(k, zero);
+                Value *lo, *hi;
+                if (op == Instruction::Shl) {
+                    auto *cross = b.CreateSelect(nonzero, b.CreateLShr(a.first, inverse), zero);
+                    lo = b.CreateSelect(small, b.CreateShl(a.first, k), zero);
+                    hi = b.CreateSelect(small, b.CreateOr(b.CreateShl(a.second, k), cross), b.CreateShl(a.first, k));
+                } else {
+                    auto *upper = op == Instruction::AShr ? b.CreateAShr(a.second, k) : b.CreateLShr(a.second, k);
+                    auto *fill = op == Instruction::AShr ? b.CreateAShr(a.second, 63) : zero;
+                    auto *cross = b.CreateSelect(nonzero, b.CreateShl(a.second, inverse), zero);
+                    lo = b.CreateSelect(small, b.CreateOr(b.CreateLShr(a.first, k), cross), upper);
+                    hi = b.CreateSelect(small, upper, fill);
+                }
+                // LLVM shifts by >= width are poison. Do not wrap an invalid
+                // 128-bit count or create a shift-by-64 in an otherwise valid path.
+                result = {b.CreateSelect(valid, lo, PoisonValue::get(ty)), b.CreateSelect(valid, hi, PoisonValue::get(ty))};
+                values[v] = result;
+                erased.push_back(i);
+                return result;
+            }
+            if (count->getValue().uge(128)) return fail(i);
             unsigned n = count->getZExtValue();
             auto shiftHigh = [&](unsigned s) -> Value * {
                 return op == Instruction::AShr ? b.CreateAShr(a.second, s) : b.CreateLShr(a.second, s);
@@ -135,6 +245,7 @@ struct Lower {
             error = "i128 lowering requires little-endian memory";
             return false;
         }
+        if (!normalizePrivateStorage(module)) return false;
         SmallVector<Instruction *, 64> original;
         for (auto &f : module)
             for (auto &i : instructions(f)) original.push_back(&i);
@@ -164,13 +275,13 @@ struct Lower {
                 erased.push_back(t);
             } else if (auto *s = dyn_cast<StoreInst>(i)) {
                 if (!s->getValueOperand()->getType()->isIntegerTy(128)) continue;
-                if (s->isVolatile() || s->isAtomic()) { fail(i); return false; }
+                if (s->isAtomic() || (s->isVolatile() && !LLVMMetalPrivateMemory(wrap(s)))) { fail(i); return false; }
                 auto a = get(s->getValueOperand());
                 if (!a.first) return false;
                 IRBuilder<> b(s);
                 auto *p = s->getPointerOperand();
-                b.CreateAlignedStore(a.first, p, s->getAlign());
-                b.CreateAlignedStore(a.second, b.CreateGEP(b.getInt8Ty(), p, b.getInt64(8)), commonAlignment(s->getAlign(), 8));
+                b.CreateAlignedStore(a.first, p, s->getAlign(), s->isVolatile());
+                b.CreateAlignedStore(a.second, b.CreateGEP(b.getInt8Ty(), p, b.getInt64(8)), commonAlignment(s->getAlign(), 8), s->isVolatile());
                 erased.push_back(s);
             }
         }
