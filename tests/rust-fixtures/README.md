@@ -158,7 +158,7 @@ in this producer configuration; Metal still performs its own code generation. Th
 correctness fixtures, not tuned performance builds. It rejects unresolved
 runtime symbols. Only the explicitly declared linear index and device fetch-add
 operations are permitted for the batch wrapper. No allocator/panic/runtime stubs
-are supplied. Only explicit local k256 consumer snapshots apply the consumer's
+are supplied. Explicit local k256 and Solana consumer snapshots apply the consumer's
 locked zeroize patch. Passing these fixtures does not establish that
 all vanity-miner dependencies work on stable Rust.
 
@@ -185,3 +185,31 @@ nix develop path:.#rust-fixtures --command env \
   LLVM_METAL_CONSUMER_PATH=/absolute/path/to/vanity-miner-rs-metal cargo test --locked \
   -p llvm-metal-compiler --test optimizer -- --ignored --nocapture
 ```
+
+## Solana
+
+`solana` is a separate fixture workspace using curve25519-dalek 4.1.3 and an
+explicit local consumer snapshot. It applies the consumer's locked zeroize fork.
+The ten `consumer_solana_*` entries cover SHA-512, clamp, scalar reduction from
+32/64 bytes, scalar product, point decompression/doubling, base multiplication,
+public-key derivation, Base58 and full addresses. Each consumes runtime bytes
+and returns intermediate data rather than a pass/fail constant. Interfaces
+specify exact input/output sizes; all outputs include padding checks on the GPU.
+
+The native tests use independent SHA-512, BigUint modular arithmetic and Base58,
+RFC 8032 public keys and existing consumer vectors. GPU tests cover walking bits,
+scalar-order boundaries, zero/all-ones/ramp and deterministic random inputs,
+with 3,316 guarded CPU/GPU comparisons. Only source, interfaces and locks are
+committed; generated bitcode, AIR and metallib remain under `target/`.
+
+```sh
+nix develop path:.#rust-fixtures --command env \
+  LLVM_METAL_CONSUMER_PATH=/absolute/path/to/vanity-miner-rs-metal \
+  cargo test --locked -p llvm-metal-compiler --test solana \
+  -- --ignored --nocapture --test-threads=1
+```
+
+The separate consumer application tests cover batched candidates, patterns,
+errors, winner reporting and CLI execution. `metal_solana_bench` in that worktree
+measures warm throughput with audit disabled, separating GPU, transfers,
+submission, pipeline creation and a single-thread CPU baseline.

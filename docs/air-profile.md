@@ -16,8 +16,9 @@ rejected. A type/opcode passing validation does not establish support for every
 possible combination; library/pipeline creation remains a separate check.
 
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
-three-way comparison, scalar integer absolute value, nonvolatile memcpy/memset,
-and removable lifetime/alias hints. Unknown externals, inline assembly, indirect calls, mutable globals,
+three-way comparison, scalar integer absolute value and signed/unsigned min/max,
+nonvolatile memcpy/memset,
+and removable assume/lifetime/alias hints. Unknown externals, inline assembly, indirect calls, mutable globals,
 pointer/integer casts, native LLVM atomics, volatile device memory, floating point,
 and NVVM metadata are rejected. Volatile accesses rooted in private allocas
 are preserved, supporting subtle's local optimization barrier and the consumer's
@@ -32,6 +33,14 @@ INT_MIN; true uses NSW negation to preserve its poison case, following
 [LLVM's intrinsic contract](https://llvm.org/docs/LangRef.html#llvm-abs-intrinsic).
 Vector and wide absolute values remain unsupported. GPU tests cover every byte
 value and wider signed boundaries; poison cases are checked structurally.
+
+Scalar i8/i16/i32/i64 `smin`, `smax`, `umin` and `umax` lower to comparisons
+with the corresponding signedness and selection. Vector/wide inputs are rejected.
+`freeze` is preserved through LLVM 14 bitcode serialization and accepted by the
+tested Apple pipeline; it is not replaced by its possibly poison operand.
+`llvm.assume` is discarded as an optimization hint after legalization.
+The generic InstCombine passes allow up to four iterations, retaining fixpoint
+verification: expanded dalek scalar products do not converge within one iteration.
 
 A narrow scalar i128 pass lowers zero/sign extension from at most 64 bits,
 addition/subtraction, multiplication, bitwise AND/XOR, comparisons, selection,

@@ -47,7 +47,7 @@ def post_inline(source, output, *, timeout=None):
 def main():
     global FIXTURE, OUTPUT
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--fixture", choices=["shallenge", "k256"], default="shallenge")
+    parser.add_argument("--fixture", choices=["shallenge", "k256", "solana"], default="shallenge")
     parser.add_argument("--entry")
     parser.add_argument("--consumer-path", type=Path, help="explicit local diagnostic build; records copied consumer source hashes")
     options = parser.parse_args()
@@ -67,7 +67,12 @@ def main():
     interfaces = {p.stem: p for p in (FIXTURE / "interfaces").glob("*.json")}
     if options.fixture == "shallenge":
         interfaces["shallenge_sha256_32"] = FIXTURE / "kernel.interface.json"
-    selected = options.entry or ("shallenge_sha256_32" if options.fixture == "shallenge" else "k256_scalar_roundtrip")
+    defaults = {
+        "shallenge": "shallenge_sha256_32",
+        "k256": "k256_scalar_roundtrip",
+        "solana": "consumer_solana_scalar_reduce",
+    }
+    selected = options.entry or defaults[options.fixture]
     if selected not in interfaces:
         parser.error(f"unknown entry {selected}; choose from {sorted(interfaces)}")
     interface_path = interfaces[selected]
@@ -94,7 +99,7 @@ def main():
         lines = ['compiler-probes = ["vanity-logic/compiler-probes"]' if line == "compiler-probes = []" else line for line in lines]
         lines = ['consumer = ["dep:vanity-logic"]' if line == "consumer = []" else line for line in lines]
         manifest.write_text("\n".join(lines) + "\n")
-        if options.fixture == "k256":
+        if options.fixture in ("k256", "solana"):
             # Match the consumer's existing zeroize fork at its locked commit,
             # rather than accidentally testing a different crates.io release.
             workspace = options.consumer_path.resolve()
@@ -112,7 +117,7 @@ def main():
     common = ["--locked", "--manifest-path", source_fixture / "Cargo.toml"]
     if selected.startswith("consumer_"):
         if not options.consumer_path:
-            raise RuntimeError("checked public-key wrappers are local; use --consumer-path for an explicit diagnostic snapshot")
+            raise RuntimeError("consumer integration fixtures are local; use --consumer-path for an explicit source snapshot")
         common += ["--features", "consumer"]
     if selected.startswith("sha_"):
         if not options.consumer_path:

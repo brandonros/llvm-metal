@@ -25,9 +25,13 @@ Implemented and checked on Apple M5/macOS 26.6.2:
 - A fixture batch kernel with bounds checks, device fetch-add counters and winner
   indices, checked after command completion against the CPU oracle.
 
-The tested batch wrapper is not yet integrated into vanity-miner's application
-backend. Performance, other GPU/OS combinations, general memory ordering,
-wide-integer support and the other crypto workloads remain open. See the
+The isolated vanity-miner application worktree integrates Shallenge, Ethereum,
+Bitcoin P2WPKH and Solana through this direct Metal pipeline. Each has bounded
+CLI tests, guarded batches, per-lane CPU comparison and verified winner output.
+Solana's real dalek stages and address derivation are covered by 3,316 runtime
+CPU/GPU comparisons. Consumer/compiler publication and repinning remain separate.
+Other GPU/OS combinations, general memory ordering, unrestricted wide integers
+and the remaining crypto workloads are open. See the
 [implemented AIR profile](air-profile.md) and [commands](../tests/rust-fixtures/README.md).
 
 ## 2.0 Establish the execution and isolation machinery
@@ -158,7 +162,23 @@ operations until this entire branch is independently correct.
 Source: `self_test/solana/{arithmetic,ed25519_probes,base58_probes,layout_probes}.rs`,
 `self_test/solana/bisect_scalar52.rs`, `crypto/{sha512,ed25519}.rs`.
 
-Run three branches before composing the Solana candidate:
+Implemented in `tests/rust-fixtures/solana`: SHA-512, clamp, real dalek 32/64-byte
+scalar reduction, scalar multiplication, point decompression/doubling, fixed-base
+multiplication, production public-key derivation, Base58 and composed addresses.
+Ten GPU fixtures compare 3,316 runtime records with the native oracle, preserving
+input/output guards. Independent SHA-512, BigUint reduction/product/Base58,
+RFC 8032 public keys and existing consumer vectors validate the native wrappers.
+The actual dependency is curve25519-dalek 4.1.3 with the consumer's locked zeroize
+fork; copied Scalar52 diagnostics are not the implementation.
+
+The consumer's Solana Metal kernel/runner now checks candidate generation,
+prefix/suffix patterns, lane bounds, atomic match counts, winner output and errors.
+Tests cover groups of 32/64/128, partial groups, counter/seed boundaries and
+mandatory winner verification with audit enabled and disabled. The shared consumer
+counter mapping advances by the batch width, preventing repeated candidates
+across batches and making the stream independent of launch partitioning.
+
+Finer diagnostic subdivisions remain available when a stage needs isolation:
 
 1. **SHA-512:** 64-bit rotate/sigma → one round → schedule/compression → existing
    fixed 32-byte-input hash. Reuse `solana.primitive_sha512`.

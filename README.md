@@ -1,10 +1,10 @@
 # llvm-metal
 Compile LLVM bitcode into Metal libraries for Apple GPUs.
 
-The integer/buffer pipeline runs real Rust Shallenge, Ethereum and Bitcoin routines
+The integer/buffer pipeline runs real Rust Shallenge, Ethereum, Bitcoin and Solana routines
 on an Apple M5, including candidate checking and indexed batches with atomic
-match counts and winner indices. This is an experimental compiler
-profile, not general CUDA compatibility or a performance-tested miner backend.
+match counts and winner indices. This remains an experimental integer/buffer
+compiler profile.
 
 ```text
 stock Rust → linked LLVM 21 bitcode + interface.json
@@ -59,10 +59,12 @@ See [the profile and limitations](docs/air-profile.md).
 GPU tests are opt-in and fail if their prerequisites or comparisons fail. Results
 have been checked on Apple M5/macOS 26.6.2 only. Buffer guards, CPU comparisons,
 independent SHA answers, partial groups and concurrent atomic results are tested;
-throughput and other Apple GPU/OS combinations have not been measured.
+the consumer includes a warm Solana throughput sweep. Other Apple GPU/OS
+combinations remain unvalidated.
 
 The [fixture guide](tests/rust-fixtures/README.md) explains pinned dependencies,
 source hashes and local SHA diagnostics. Keep small source fixtures in Git and
 generate ordinary bitcode under `target/`. The [phase-2 plan](docs/phase-2.md)
 tracks the crypto progression. The implemented k256 path includes wide integer
-arithmetic and secp256k1; other curves and RSA remain future work.
+arithmetic and secp256k1; Solana adds SHA-512, dalek/Ed25519 and Base58.
+RSA and unrestricted crypto support remain future work.

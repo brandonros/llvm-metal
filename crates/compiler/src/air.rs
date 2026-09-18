@@ -124,6 +124,11 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                     "llvm.fshr.",
                     "llvm.ucmp.",
                     "llvm.abs.",
+                    "llvm.assume",
+                    "llvm.umin.",
+                    "llvm.umax.",
+                    "llvm.smin.",
+                    "llvm.smax.",
                     "llvm.lifetime.start",
                     "llvm.lifetime.end",
                     "llvm.memcpy.",
@@ -155,6 +160,7 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                         | Xor
                         | ICmp
                         | Select
+                        | Freeze
                         | Phi
                         | Br
                         | Switch
@@ -212,6 +218,20 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                         .get_called_fn_value()
                         .unwrap();
                     let name = callee.get_name().to_string_lossy();
+                    if ["llvm.umin.", "llvm.umax.", "llvm.smin.", "llvm.smax."]
+                        .iter()
+                        .any(|prefix| name.starts_with(prefix))
+                    {
+                        let value = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
+                        if !value.is_int_value()
+                            || !matches!(
+                                value.into_int_value().get_type().get_bit_width(),
+                                8 | 16 | 32 | 64
+                            )
+                        {
+                            return Err("integer min/max requires a scalar i8/i16/i32/i64".into());
+                        }
+                    }
                     if name.starts_with("llvm.abs.") {
                         let value = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
                         if !value.is_int_value()
@@ -444,9 +464,11 @@ pub fn legalize<'ctx>(
     }
     module.set_triple(&TargetTriple::create("air64-apple-macosx13.0.0"));
     module.set_data_layout(&TargetData::create(AIR_LAYOUT).get_data_layout());
+    // Expanded dalek scalar products need multiple InstCombine iterations.
+    // Keep fixpoint verification enabled rather than suppressing its assertion.
     passes(
         &module,
-        "always-inline,function(sroa,instcombine),globaldce",
+        "always-inline,function(sroa,instcombine<verify-fixpoint;max-iterations=4>),globaldce",
     )?;
     for block in entry.get_basic_blocks() {
         let instructions: Vec<_> = block.get_instructions().collect();
@@ -538,7 +560,10 @@ pub fn legalize<'ctx>(
         LLVMMetalRemoveCodegenFlags(module.as_mut_ptr());
         LLVMMetalInferAddressSpaces(module.as_mut_ptr());
     }
-    passes(&module, "function(instcombine,simplifycfg),globaldce")?;
+    passes(
+        &module,
+        "function(instcombine<verify-fixpoint;max-iterations=4>,simplifycfg),globaldce",
+    )?;
     // These are optimization/lifetime hints, not device operations. AIR does not
     // implement them. Dropping both dynamic scope declarations and alias facts
     // avoids carrying Rust's scoped alias model into a different backend.
@@ -562,6 +587,42 @@ pub fn legalize<'ctx>(
                     .get_called_fn_value()
                 {
                     let name = function.get_name().to_string_lossy();
+                    let minmax = [
+                        ("llvm.umin.", inkwell::IntPredicate::ULT),
+                        ("llvm.umax.", inkwell::IntPredicate::UGT),
+                        ("llvm.smin.", inkwell::IntPredicate::SLT),
+                        ("llvm.smax.", inkwell::IntPredicate::SGT),
+                    ]
+                    .into_iter()
+                    .find(|(prefix, _)| name.starts_with(prefix));
+                    if let Some((_, predicate)) = minmax {
+                        let a = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
+                        let b = instruction.get_operand(1).and_then(|o| o.value()).unwrap();
+                        if !a.is_int_value() || !b.is_int_value() {
+                            return Err("vector integer min/max is unsupported".into());
+                        }
+                        builder.position_before(&instruction);
+                        let condition = builder
+                            .build_int_compare(
+                                predicate,
+                                a.into_int_value(),
+                                b.into_int_value(),
+                                "minmax.compare",
+                            )
+                            .map_err(|e| e.to_string())?;
+                        let value = builder
+                            .build_select(condition, a, b, "minmax.value")
+                            .map_err(|e| e.to_string())?;
+                        // SAFETY: scalar operands and replacement have the intrinsic's type.
+                        unsafe {
+                            inkwell::llvm_sys::core::LLVMReplaceAllUsesWith(
+                                instruction.as_value_ref(),
+                                value.as_value_ref(),
+                            );
+                        }
+                        instruction.erase_from_basic_block();
+                        continue;
+                    }
                     if name.starts_with("llvm.abs.") {
                         let value = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
                         if !value.is_int_value() {
@@ -665,6 +726,7 @@ pub fn legalize<'ctx>(
                     }
                     if name.starts_with("llvm.lifetime.")
                         || name == "llvm.experimental.noalias.scope.decl"
+                        || name == "llvm.assume"
                     {
                         instruction.erase_from_basic_block();
                     }
