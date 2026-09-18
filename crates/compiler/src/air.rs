@@ -75,6 +75,9 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
         match ty {
             BasicTypeEnum::IntType(_) => true,
             BasicTypeEnum::ArrayType(t) => constant_data(t.get_element_type()),
+            BasicTypeEnum::StructType(t) => {
+                !t.is_opaque() && t.get_field_types().into_iter().all(constant_data)
+            }
             _ => false,
         }
     }
@@ -87,7 +90,8 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
             || global.as_pointer_value().get_type().get_address_space() != AddressSpace::default()
         {
             return Err(
-                "only constant integer/array globals in address space 0 are supported".into(),
+                "only constant integer/array/struct globals in address space 0 are supported"
+                    .into(),
             );
         }
         check_type(initializer.get_type(), &source, &destination)?;

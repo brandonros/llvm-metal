@@ -162,6 +162,32 @@ define void @kernel(ptr %p) {
 }
 "#
 }
+fn struct_pointer_source() -> String {
+    pointer_source().replace("@table = constant [2 x i64] [i64 37, i64 91]", "@table = constant <{ [2 x i64], [7 x i8] }> <{ [2 x i64] [i64 37, i64 91], [7 x i8] undef }>, align 8")
+}
+
+#[test]
+fn constant_struct_with_undefined_padding_preserves_retained_table_access() {
+    let context = Context::create();
+    let input = parse_ir(
+        &context,
+        struct_pointer_source().as_bytes(),
+        "constant-struct",
+    )
+    .unwrap();
+    let artifact = llvm_metal_compiler::compile::compile(&input, &interface()).unwrap();
+    let air =
+        llvm_metal_compiler::parse_bitcode(&context, &artifact.air_bitcode, "struct-air").unwrap();
+    assert!(air.get_function("nested_read.metal.2").is_some());
+    assert!(
+        air.get_global("table")
+            .unwrap()
+            .get_initializer()
+            .unwrap()
+            .is_struct_value()
+    );
+}
+
 #[test]
 fn helpers_specialize_for_device_private_and_constant_pointers() {
     let context = Context::create();
@@ -189,39 +215,41 @@ fn helpers_specialize_for_device_private_and_constant_pointers() {
 #[ignore = "requires Apple GPU and pinned llvm-downgrade"]
 fn specialized_pointer_calls_execute_on_gpu() {
     use llvm_metal_runtime::{Buffer, Kernel};
-    let context = Context::create();
-    let input = parse_ir(&context, pointer_source().as_bytes(), "pointers").unwrap();
-    let artifact = llvm_metal_compiler::compile::compile_with_policy(
-        &input,
-        &interface(),
-        InliningPolicy::Selective,
-    )
-    .unwrap();
-    let temp = tempfile::tempdir().unwrap();
-    let path = temp.path().join("kernel.metallib");
-    std::fs::write(&path, artifact.metallib).unwrap();
-    let kernel = Kernel::load(&path, &artifact.bindings).unwrap();
-    for x in [0u64, 100, u64::MAX] {
-        let mut buffers = [Buffer {
-            bytes: vec![0xa5; 528],
-            offset: 256,
-        }];
-        buffers[0].bytes[256..264].copy_from_slice(&x.to_le_bytes());
-        // SAFETY: one invocation with disjoint initialized storage and output guards.
-        unsafe {
-            kernel.run(&mut buffers, 1, 1).unwrap();
+    for source in [pointer_source(), struct_pointer_source()] {
+        let context = Context::create();
+        let input = parse_ir(&context, source.as_bytes(), "pointers").unwrap();
+        let artifact = llvm_metal_compiler::compile::compile_with_policy(
+            &input,
+            &interface(),
+            InliningPolicy::Selective,
+        )
+        .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("kernel.metallib");
+        std::fs::write(&path, artifact.metallib).unwrap();
+        let kernel = Kernel::load(&path, &artifact.bindings).unwrap();
+        for x in [0u64, 100, u64::MAX] {
+            let mut buffers = [Buffer {
+                bytes: vec![0xa5; 528],
+                offset: 256,
+            }];
+            buffers[0].bytes[256..264].copy_from_slice(&x.to_le_bytes());
+            // SAFETY: one invocation with disjoint initialized storage and output guards.
+            unsafe {
+                kernel.run(&mut buffers, 1, 1).unwrap();
+            }
+            assert_eq!(
+                &buffers[0].bytes[264..272],
+                &x.wrapping_add(104).to_le_bytes()
+            );
+            assert_eq!(&buffers[0].bytes[256..264], &x.to_le_bytes());
+            assert!(
+                buffers[0].bytes[..256]
+                    .iter()
+                    .chain(&buffers[0].bytes[272..])
+                    .all(|b| *b == 0xa5)
+            );
         }
-        assert_eq!(
-            &buffers[0].bytes[264..272],
-            &x.wrapping_add(104).to_le_bytes()
-        );
-        assert_eq!(&buffers[0].bytes[256..264], &x.to_le_bytes());
-        assert!(
-            buffers[0].bytes[..256]
-                .iter()
-                .chain(&buffers[0].bytes[272..])
-                .all(|b| *b == 0xa5)
-        );
     }
 }
 

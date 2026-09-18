@@ -67,7 +67,7 @@ kernel bodies obey their declared accesses.
 Supported input includes 1/8/16/32/64-bit integer operations, branches, PHIs,
 and existing unreachable terminators (source undefined behavior),
 fixed vectors/arrays/structs with matching source/AIR layouts, stack allocations,
-loads/stores, pointer helpers and constant integer/array globals. Defined C/fastcc
+loads/stores, pointer helpers and constant integer/array/struct globals. Defined C/fastcc
 helpers use selective inlining by default, as described below. Surviving pointer address-space conversions are rejected. A type/opcode passing validation does not establish support for every
 possible combination; library/pipeline creation remains a separate check.
 
@@ -76,12 +76,17 @@ possible combination; library/pipeline creation remains a separate check.
 `compile --inlining selective` retains internal, nonrecursive helpers with void
 or i8/i16/i32/i64 returns and scalar or pointer parameters. It retains eligible
 functions with at least 32 LLVM instructions or an explicit `noinline` request;
-smaller wrappers and unsupported interfaces still inline. `retain-scalar` is a
+smaller wrappers, constant-state initializers, and unsupported interfaces still inline. `retain-scalar` is a
 narrow diagnostic policy without pointer parameters. `selective` is the default in both library APIs and the CLI; `--inlining all`
 opts into full inlining. Internal C/fastcc definitions and all direct call sites are
 normalized together to C for AIR. Scalar-i128 interfaces and helpers depending
 on the entry's thread index continue to require inlining. Pointer/aggregate
-returns are not yet retained. Copy/stack ABI parameters (`byval`, `byref`,
+returns are not yet retained. Preparation also inlines helpers that transitively
+use unsupported runtime operations, indirect calls, or pointer-containing memory
+interfaces, allowing LLVM to eliminate
+unreachable paths using caller facts. Escaping callbacks may exist in producer
+bitcode but must disappear before final legalization; live unsupported paths
+still fail. Copy/stack ABI parameters (`byval`, `byref`,
 `inalloca`, `preallocated`, and nest/Swift context parameters) also require
 inlining; ordinary pointer parameters and tested `sret` parameters can remain.
 

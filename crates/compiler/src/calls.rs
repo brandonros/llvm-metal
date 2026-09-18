@@ -9,7 +9,7 @@ use std::collections::HashSet;
 pub(crate) fn validate(module: &Module<'_>) -> Result<(), String> {
     validate_calls(module, true)
 }
-fn validate_calls(module: &Module<'_>, reject_recursion: bool) -> Result<(), String> {
+fn validate_calls(module: &Module<'_>, final_input: bool) -> Result<(), String> {
     for f in module
         .get_functions()
         .filter(|f| f.count_basic_blocks() != 0)
@@ -17,13 +17,15 @@ fn validate_calls(module: &Module<'_>, reject_recursion: bool) -> Result<(), Str
         f.get_name()
             .to_str()
             .map_err(|_| "helper names must be UTF-8")?;
-        crate::wide_helpers::direct_uses(f).map_err(|_| {
-            format!(
-                "function address escapes: {}",
-                f.get_name().to_string_lossy()
-            )
-        })?;
-        if reject_recursion && crate::wide_helpers::recursive(f) {
+        if final_input {
+            crate::wide_helpers::direct_uses(f).map_err(|_| {
+                format!(
+                    "function address escapes: {}",
+                    f.get_name().to_string_lossy()
+                )
+            })?;
+        }
+        if final_input && crate::wide_helpers::recursive(f) {
             return Err(format!(
                 "recursive helper is unsupported: {}",
                 f.get_name().to_string_lossy()
@@ -35,9 +37,12 @@ fn validate_calls(module: &Module<'_>, reject_recursion: bool) -> Result<(), Str
             .flat_map(|b| b.get_instructions())
         {
             if let Ok(call) = CallSiteValue::try_from(i) {
-                let callee = call
-                    .get_called_fn_value()
-                    .ok_or("indirect calls are unsupported")?;
+                let Some(callee) = call.get_called_fn_value() else {
+                    if final_input {
+                        return Err("indirect calls are unsupported".into());
+                    }
+                    continue;
+                };
                 // Operand bundles can encode deoptimization or target semantics;
                 // rebuilding a call must never silently drop them.
                 if unsafe { inkwell::llvm_sys::core::LLVMGetNumOperandBundles(call.as_value_ref()) }
@@ -99,6 +104,32 @@ fn supported_signature(f: FunctionValue<'_>, policy: InliningPolicy) -> bool {
             scalar(p.get_type()) || (policy == InliningPolicy::Selective && p.is_pointer_value())
         })
 }
+// Constant initializers expose state fields (lengths, domains, tags) which
+// callers need to prove bounds/panic branches unreachable. Their many stores
+// should not make them expensive retained helpers under the instruction heuristic.
+fn constant_initializer(f: FunctionValue<'_>) -> bool {
+    use inkwell::values::InstructionOpcode;
+    f.get_type().get_return_type().is_none()
+        && f.count_basic_blocks() == 1
+        && f.get_first_basic_block()
+            .unwrap()
+            .get_instructions()
+            .any(|i| i.get_opcode() == InstructionOpcode::Store)
+        && f.get_first_basic_block()
+            .unwrap()
+            .get_instructions()
+            .all(|i| match i.get_opcode() {
+                InstructionOpcode::GetElementPtr | InstructionOpcode::Return => true,
+                InstructionOpcode::Store => unsafe {
+                    inkwell::llvm_sys::core::LLVMGetVolatile(i.as_value_ref()) == 0
+                        && inkwell::llvm_sys::core::LLVMIsConstant(
+                            inkwell::llvm_sys::core::LLVMGetOperand(i.as_value_ref(), 0),
+                        ) != 0
+                },
+                _ => false,
+            })
+}
+
 pub(crate) fn retained(
     module: &Module<'_>,
     entry: &str,
@@ -116,11 +147,51 @@ fn select(
         return Ok(HashSet::new());
     }
     validate_calls(module, final_input)?;
-    // Propagate the thread-index requirement to every caller, so none can retain
-    // a dependency on the entry-only builtin. Atomic operations have explicit args.
-    let mut indexed = HashSet::from(["llvm_metal.linear_thread_index".to_owned()]);
+    // Propagate required inlining to callers: thread-index use needs the entry,
+    // and unsupported runtime paths need caller facts before LLVM can eliminate
+    // them. Never assume a panic guard is false or erase a runtime call ourselves.
+    let mut required = HashSet::from(["llvm_metal.linear_thread_index".to_owned()]);
+    if !final_input {
+        for f in module.get_functions() {
+            let name = f.get_name().to_string_lossy().into_owned();
+            let unsupported_external = f.count_basic_blocks() == 0
+                && f.get_intrinsic_id() == 0
+                && !matches!(
+                    name.as_str(),
+                    "llvm_metal.atomic_add_device_u32" | "memcmp" | "bcmp"
+                );
+            let indirect = f
+                .get_basic_blocks()
+                .iter()
+                .flat_map(|b| b.get_instructions())
+                .filter_map(|i| CallSiteValue::try_from(i).ok())
+                .any(|call| call.get_called_fn_value().is_none());
+            // Generic pointers carried through memory require inlining/SROA.
+            // Pointer-parameter specialization alone cannot retag a struct's
+            // stored pointer fields without changing its memory contract.
+            let pointer_memory = f
+                .get_basic_blocks()
+                .iter()
+                .flat_map(|b| b.get_instructions())
+                .any(|i| {
+                    use inkwell::values::InstructionOpcode;
+                    match i.get_opcode() {
+                        InstructionOpcode::Load => i.get_type().is_pointer_type(),
+                        InstructionOpcode::Store => unsafe {
+                            use inkwell::llvm_sys::{LLVMTypeKind, core::*};
+                            LLVMGetTypeKind(LLVMTypeOf(LLVMGetOperand(i.as_value_ref(), 0)))
+                                == LLVMTypeKind::LLVMPointerTypeKind
+                        },
+                        _ => false,
+                    }
+                });
+            if unsupported_external || indirect || pointer_memory {
+                required.insert(name);
+            }
+        }
+    }
     loop {
-        let before = indexed.len();
+        let before = required.len();
         for f in module.get_functions() {
             if f.get_basic_blocks()
                 .iter()
@@ -130,14 +201,14 @@ fn select(
                         .ok()
                         .and_then(|c| c.get_called_fn_value())
                         .is_some_and(|c| {
-                            indexed.contains(&c.get_name().to_string_lossy().into_owned())
+                            required.contains(&c.get_name().to_string_lossy().into_owned())
                         })
                 })
             {
-                indexed.insert(f.get_name().to_string_lossy().into_owned());
+                required.insert(f.get_name().to_string_lossy().into_owned());
             }
         }
-        if indexed.len() == before {
+        if required.len() == before {
             break;
         }
     }
@@ -146,8 +217,10 @@ fn select(
         .filter(|f| {
             f.count_basic_blocks() != 0
                 && supported_signature(*f, policy)
+                && !constant_initializer(*f)
                 && matches!(f.get_linkage(), Linkage::Internal | Linkage::Private)
                 && !crate::wide_helpers::recursive(*f)
+                && crate::wide_helpers::direct_uses(*f).is_ok()
                 && (policy != InliningPolicy::Selective
                     || f.get_enum_attribute(
                         inkwell::attributes::AttributeLoc::Function,
@@ -161,7 +234,7 @@ fn select(
                         >= 32)
         })
         .map(|f| f.get_name().to_string_lossy().into_owned())
-        .filter(|name| name != entry && !indexed.contains(name))
+        .filter(|name| name != entry && !required.contains(name))
         .collect())
 }
 
@@ -198,9 +271,10 @@ pub fn prepare<'ctx>(
     input.verify().map_err(|e| e.to_string())?;
     crate::require_entry(input, entry).map_err(|e| e.to_string())?;
     let module = input.clone();
-    // The producer may contain recursive fallback paths which ordinary LLVM
-    // inlining/constant propagation removes. Never retain these boundaries;
-    // final legalization still rejects any recursion left after optimization.
+    // Producer bitcode can contain recursive fallbacks and escaping formatting
+    // callbacks on panic paths. Let LLVM remove unreachable paths; never retain
+    // recursive or escaping boundaries. Final legalization still rejects any
+    // surviving recursion, function addresses, or indirect calls.
     let names = select(&module, entry, policy, false)?;
     let context = module.get_context();
     for function in module
@@ -292,5 +366,114 @@ pub(crate) fn strip_modern_parameter_facts(module: &Module<'_>) {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preparation_eliminates_pointer_fields_before_retaining_arithmetic() {
+        let context = inkwell::context::Context::create();
+        let input = crate::parse_ir(
+            &context,
+            br#"
+            define internal i64 @compute(i64 %x) noinline {
+                %r = mul i64 %x, 17
+                ret i64 %r
+            }
+            define internal i64 @read_record(ptr %record) noinline {
+                %p = load ptr, ptr %record
+                %x = load i64, ptr %p
+                %r = call i64 @compute(i64 %x)
+                ret i64 %r
+            }
+            define internal i64 @wrap(ptr %record) noinline {
+                %r = call i64 @read_record(ptr %record)
+                ret i64 %r
+            }
+            define void @kernel(ptr %p) {
+                %record = alloca ptr
+                store ptr %p, ptr %record
+                %r = call i64 @wrap(ptr %record)
+                store i64 %r, ptr %p
+                ret void
+            }
+        "#,
+            "pointer-fields",
+        )
+        .unwrap();
+        let prepared = prepare(&input, "kernel", InliningPolicy::Selective).unwrap();
+        crate::air::passes(&prepared, "always-inline,default<O3>,globaldce").unwrap();
+        validate(&prepared).unwrap();
+        assert!(prepared.get_function("compute").is_some());
+        assert!(prepared.get_function("read_record").is_none());
+        assert!(prepared.get_function("wrap").is_none());
+        assert!(!prepared.print_to_string().to_string().contains("load ptr"));
+    }
+
+    #[test]
+    fn preparation_exposes_constant_state_and_dead_runtime_callbacks() {
+        let context = inkwell::context::Context::create();
+        let stores = (0..24)
+            .map(|i| {
+                format!("%p{i} = getelementptr i64, ptr %p, i64 {i}\nstore i64 7, ptr %p{i}\n")
+            })
+            .collect::<String>();
+        let source = format!(
+            r#"
+            declare void @report(ptr)
+            define internal void @callback(ptr %p) {{ ret void }}
+            define internal void @initialize(ptr %p) {{ {stores} ret void }}
+            define internal i64 @compute(i64 %x) noinline {{
+                %r = mul i64 %x, 17
+                ret i64 %r
+            }}
+            define internal i64 @checked(ptr %state, i64 %x) noinline {{
+                %n = load i64, ptr %state
+                %ok = icmp eq i64 %n, 7
+                br i1 %ok, label %valid, label %invalid
+            valid:
+                %r = call i64 @compute(i64 %x)
+                ret i64 %r
+            invalid:
+                %slot = alloca ptr
+                store ptr @callback, ptr %slot
+                call void @report(ptr %slot)
+                ret i64 0
+            }}
+            define void @kernel(ptr %p) {{
+                %state = alloca [24 x i64]
+                call void @initialize(ptr %state)
+                %x = load i64, ptr %p
+                %r = call i64 @checked(ptr %state, i64 %x)
+                store i64 %r, ptr %p
+                ret void
+            }}
+        "#
+        );
+        let input = crate::parse_ir(&context, source.as_bytes(), "runtime-paths").unwrap();
+        let original = input.print_to_string().to_string();
+        let prepared = prepare(&input, "kernel", InliningPolicy::Selective).unwrap();
+        crate::air::passes(&prepared, "always-inline,default<O3>,globaldce").unwrap();
+        validate(&prepared).unwrap();
+        assert!(prepared.get_function("compute").is_some());
+        for name in ["report", "callback", "initialize", "checked"] {
+            assert!(prepared.get_function(name).is_none(), "surviving {name}");
+        }
+        assert_eq!(input.print_to_string().to_string(), original);
+
+        // If initialization is absent, the callback/runtime path remains live.
+        // Preparation must not erase it or treat its guard as an assumption.
+        let live = source.replace(
+            "call void @initialize(ptr %state)",
+            "store i64 0, ptr %state",
+        );
+        let input = crate::parse_ir(&context, live.as_bytes(), "live-runtime").unwrap();
+        let prepared = prepare(&input, "kernel", InliningPolicy::Selective).unwrap();
+        crate::air::passes(&prepared, "always-inline,default<O3>,globaldce").unwrap();
+        assert!(prepared.get_function("report").is_some());
+        assert!(validate(&prepared).unwrap_err().contains("escapes"));
     }
 }

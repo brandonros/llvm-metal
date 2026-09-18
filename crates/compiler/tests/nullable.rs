@@ -65,6 +65,24 @@ fn constant_source() -> String {
         )
 }
 
+fn retained_source() -> String {
+    SOURCE.replace("define void @kernel", "define internal void @write(ptr %p, i32 %x) noinline { store i32 %x, ptr %p, align 4\nret void }\ndefine void @kernel")
+        .replace("[ null,", "[ undef,")
+        .replace("%missing = icmp eq ptr %optional, null", "%missing = phi i1 [ false, %valid ], [ true, %entry ], [ true, %second ]")
+        .replace("store i32 42, ptr %optional, align 4", "call void @write(ptr %optional, i32 42)")
+}
+
+#[test]
+fn nullable_pointer_passed_to_retained_helper_has_concrete_space() {
+    let context = Context::create();
+    let module =
+        llvm_metal_compiler::parse_ir(&context, retained_source().as_bytes(), "retained-nullable")
+            .unwrap();
+    let (air, _) = llvm_metal_compiler::air::legalize(&module, &interface()).unwrap();
+    assert!(air.get_function("write.metal.1").is_some());
+    assert!(!air.print_to_string().to_string().contains("addrspacecast"));
+}
+
 #[test]
 fn checked_nullable_pointer_phi_is_legalized_without_changing_input() {
     let context = Context::create();
@@ -108,7 +126,11 @@ fn nullable_constant_pointer_is_legalized_but_mixed_private_device_is_rejected()
 #[ignore = "requires Apple GPU and pinned llvm-downgrade"]
 fn nullable_pointer_branches_preserve_data_and_guards_on_gpu() {
     use llvm_metal_runtime::{Buffer, Kernel};
-    for (source, constant) in [(SOURCE.to_owned(), false), (constant_source(), true)] {
+    for (source, constant) in [
+        (SOURCE.to_owned(), false),
+        (constant_source(), true),
+        (retained_source(), false),
+    ] {
         let context = Context::create();
         let module =
             llvm_metal_compiler::parse_ir(&context, source.as_bytes(), "nullable").unwrap();
