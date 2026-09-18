@@ -64,7 +64,7 @@ an Apple GPU; the tables above describe the original input fixtures only.
 
 ## Build coverage in these steps
 
-The [phase-2 implementation subplan](../../docs/phase-2.md) maps this progression
+The [phase-2 implementation subplan](https://github.com/brandonros/llvm-metal/issues/2) maps this progression
 to specific vanity-miner probes and smaller operations within each workload.
 It also specifies one-case kernel isolation: the current GPU self-test runner
 executes entire groups even when the CPU selector names one check.

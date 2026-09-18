@@ -64,7 +64,7 @@ combinations remain unvalidated.
 
 The [fixture guide](tests/rust-fixtures/README.md) explains pinned dependencies,
 source hashes and local SHA diagnostics. Keep small source fixtures in Git and
-generate ordinary bitcode under `target/`. The [phase-2 plan](docs/phase-2.md)
+generate ordinary bitcode under `target/`. The [phase-2 plan](https://github.com/brandonros/llvm-metal/issues/2)
 tracks the crypto progression. The implemented k256 path includes wide integer
 arithmetic and secp256k1; Solana adds SHA-512, dalek/Ed25519 and Base58.
 RSA modulus adds full-width arithmetic, prime filtering and resumable factor search.
