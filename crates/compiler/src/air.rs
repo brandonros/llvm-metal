@@ -360,6 +360,7 @@ pub fn legalize<'ctx>(
     unsafe {
         LLVMMetalExpandPrivateVolatileCopies(module.as_mut_ptr());
     }
+    crate::libcalls::lower(&module)?;
     crate::wide::lower(&module)?;
     validate_input(&module)?;
     let context = module.get_context();
