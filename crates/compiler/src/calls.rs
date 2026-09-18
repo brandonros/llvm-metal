@@ -70,7 +70,29 @@ fn supported_signature(f: FunctionValue<'_>, policy: InliningPolicy) -> bool {
     let scalar = |t: inkwell::types::BasicTypeEnum<'_>| {
         t.is_int_type() && matches!(t.into_int_type().get_bit_width(), 8 | 16 | 32 | 64)
     };
-    !f.get_type().is_var_arg()
+    // Copy/stack/register ABI parameters need their own retained-call proof.
+    // Let LLVM's existing inliner remove these interfaces for now; sret is
+    // covered by the writer regression and real SHA candidate kernels.
+    let unsupported_abi = [
+        "byval",
+        "byref",
+        "inalloca",
+        "preallocated",
+        "nest",
+        "swiftself",
+        "swifterror",
+    ];
+    let has_unsupported_abi = (0..f.count_params()).any(|i| {
+        unsupported_abi.iter().any(|name| {
+            f.get_enum_attribute(
+                inkwell::attributes::AttributeLoc::Param(i),
+                inkwell::attributes::Attribute::get_named_enum_kind_id(name),
+            )
+            .is_some()
+        })
+    });
+    !has_unsupported_abi
+        && !f.get_type().is_var_arg()
         && matches!(f.get_call_conventions(), 0 | 8)
         && f.get_type().get_return_type().is_none_or(scalar)
         && f.get_param_iter().all(|p| {

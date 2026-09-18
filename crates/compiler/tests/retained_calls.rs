@@ -415,3 +415,14 @@ fn preparation_marks_retained_boundaries_for_later_legalization() {
         legalize_with_policy(&prepared, &interface(), InliningPolicy::RetainScalar).unwrap();
     assert!(air.get_function("leaf").is_some());
 }
+
+#[test]
+fn byval_interfaces_inline_before_pointer_specialization() {
+    let context = Context::create();
+    let text = pointer_source().replace("@read(ptr %p)", "@read(ptr byval(i64) %p)");
+    let input = parse_ir(&context, text.as_bytes(), "byval").unwrap();
+    let (air, _) = legalize_with_policy(&input, &interface(), InliningPolicy::Selective).unwrap();
+    assert!(!air.print_to_string().to_string().contains("byval("));
+    assert!(air.get_function("read.metal.1").is_none());
+    assert!(air.get_function("nested_read.metal.1").is_some());
+}

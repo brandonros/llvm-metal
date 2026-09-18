@@ -82,7 +82,9 @@ narrow diagnostic policy without pointer parameters. Both are opt-in; `all`
 remains the default. Internal C/fastcc definitions and all direct call sites are
 normalized together to C for AIR. Scalar-i128 interfaces and helpers depending
 on the entry's thread index continue to require inlining. Pointer/aggregate
-returns are not yet retained.
+returns are not yet retained. Copy/stack ABI parameters (`byval`, `byref`,
+`inalloca`, `preallocated`, and nest/Swift context parameters) also require
+inlining; ordinary pointer parameters and tested `sret` parameters can remain.
 
 Consumers must preserve boundaries before their own optimization pipeline:
 internalize to the selected entry and remove dead functions, then run
