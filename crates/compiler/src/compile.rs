@@ -12,7 +12,15 @@ pub struct CompiledKernel {
 }
 
 pub fn compile(module: &Module<'_>, interface: &KernelInterface) -> Result<CompiledKernel, String> {
-    let (module, bindings) = air::legalize(module, interface)?;
+    compile_with_policy(module, interface, air::InliningPolicy::All)
+}
+
+pub fn compile_with_policy(
+    module: &Module<'_>,
+    interface: &KernelInterface,
+    policy: air::InliningPolicy,
+) -> Result<CompiledKernel, String> {
+    let (module, bindings) = air::legalize_with_policy(module, interface, policy)?;
     let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
     let modern = temporary.path().join("modern.bc");
     let legacy = temporary.path().join("air.bc");

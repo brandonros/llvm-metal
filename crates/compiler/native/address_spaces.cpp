@@ -88,7 +88,7 @@ static void typeConstantVolatileLoads(llvm::Function &function) {
     }
 }
 
-extern "C" void LLVMMetalInferAddressSpaces(LLVMModuleRef module) {
+static void infer(llvm::Module &module, llvm::Function *selected = nullptr) {
     llvm::LoopAnalysisManager loops;
     llvm::FunctionAnalysisManager functions;
     llvm::CGSCCAnalysisManager cgscc;
@@ -101,11 +101,19 @@ extern "C" void LLVMMetalInferAddressSpaces(LLVMModuleRef module) {
     builder.crossRegisterProxies(loops, functions, cgscc, modules);
     llvm::FunctionPassManager passes;
     passes.addPass(llvm::InferAddressSpacesPass(0));
-    for (auto &function : *llvm::unwrap(module))
-        if (!function.isDeclaration()) {
+    for (auto &function : module)
+        if (!function.isDeclaration() && (!selected || selected == &function)) {
             typeNullablePhis(function);
             passes.run(function, functions);
             typeConstantVolatileLoads(function);
             foldNullCasts(function);
         }
+}
+
+extern "C" void LLVMMetalInferAddressSpaces(LLVMModuleRef module) {
+    infer(*llvm::unwrap(module));
+}
+extern "C" void LLVMMetalInferFunctionAddressSpaces(LLVMValueRef value) {
+    auto *function = llvm::cast<llvm::Function>(llvm::unwrap(value));
+    infer(*function->getParent(), function);
 }

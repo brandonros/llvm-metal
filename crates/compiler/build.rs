@@ -3,6 +3,7 @@ fn main() {
     let sources = [
         "native/descriptors.cpp",
         "native/address_spaces.cpp",
+        "native/calls.cpp",
         "native/pointer_provenance.cpp",
         "native/volatile_copies.cpp",
         "native/phi_constants.cpp",

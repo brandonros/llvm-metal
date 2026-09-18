@@ -16,7 +16,7 @@ fn wide_signature(function: FunctionValue<'_>) -> bool {
         || function.get_param_iter().any(|p| wide(p.get_type()))
 }
 
-fn direct_uses(function: FunctionValue<'_>) -> Result<(), String> {
+pub(crate) fn direct_uses(function: FunctionValue<'_>) -> Result<(), String> {
     // SAFETY: the caller provides a verified module. Each use and its user are
     // live; inspect instruction-only APIs only after checking the value kind.
     unsafe {
@@ -43,7 +43,7 @@ fn direct_uses(function: FunctionValue<'_>) -> Result<(), String> {
     Ok(())
 }
 
-fn recursive(function: FunctionValue<'_>) -> bool {
+pub(crate) fn recursive(function: FunctionValue<'_>) -> bool {
     // Reachability back to the helper also catches mutual recursion through
     // functions whose own ABI has no i128. Use a worklist, not host recursion.
     let origin = function.as_value_ref();
@@ -80,7 +80,10 @@ fn recursive(function: FunctionValue<'_>) -> bool {
 
 pub(crate) fn lower(module: &Module<'_>) -> Result<(), String> {
     let mut targets = Vec::new();
-    for function in module.get_functions().filter(|f| f.get_intrinsic_id() == 0 && wide_signature(*f)) {
+    for function in module
+        .get_functions()
+        .filter(|f| f.get_intrinsic_id() == 0 && wide_signature(*f))
+    {
         // Intrinsic semantics (e.g. bswap.i128) belong to the wide-operation pass.
         if function.get_intrinsic_id() != 0 {
             continue;

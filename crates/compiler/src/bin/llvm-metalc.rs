@@ -2,10 +2,49 @@ use inkwell::context::Context;
 use llvm_metal_compiler::{parse_bitcode, parse_ir, require_entry};
 use std::{env, error::Error, fs, path::Path, process::ExitCode};
 
-const USAGE: &str = "Usage: llvm-metalc inspect <input.ll|input.bc> --entry <function>\n       llvm-metalc compile <input.ll|input.bc> <--interface json|--descriptor json|--entry name> --output <directory>\n       llvm-metalc extract <input.bc> --output <directory>";
+const USAGE: &str = "Usage: llvm-metalc inspect <input.ll|input.bc> --entry <function>\n       llvm-metalc compile <input.ll|input.bc> <--interface json|--descriptor json|--entry name> --output <directory> [--inlining all|retain-scalar|selective]\n       llvm-metalc prepare <input.bc> --entry <function> --output <output.bc> --inlining <policy>\n       llvm-metalc extract <input.bc> --output <directory>";
 
 fn main() -> ExitCode {
-    let args: Vec<_> = env::args_os().skip(1).collect();
+    let mut args: Vec<_> = env::args_os().skip(1).collect();
+    let mut policy = llvm_metal_compiler::air::InliningPolicy::All;
+    if let Some(index) = args.iter().position(|arg| arg == "--inlining") {
+        if !args
+            .first()
+            .is_some_and(|arg| arg == "compile" || arg == "prepare")
+        {
+            eprintln!("--inlining is supported only by compile and prepare");
+            return ExitCode::from(2);
+        }
+        policy = match args.get(index + 1).and_then(|arg| arg.to_str()) {
+            Some("all") => llvm_metal_compiler::air::InliningPolicy::All,
+            Some("retain-scalar") => llvm_metal_compiler::air::InliningPolicy::RetainScalar,
+            Some("selective") => llvm_metal_compiler::air::InliningPolicy::Selective,
+            _ => {
+                eprintln!("--inlining requires all, retain-scalar, or selective");
+                return ExitCode::from(2);
+            }
+        };
+        args.drain(index..index + 2);
+    }
+    if args.len() == 6 && args[0] == "prepare" && args[2] == "--entry" && args[4] == "--output" {
+        let result = (|| -> Result<(), Box<dyn Error>> {
+            let context = Context::create();
+            let module = parse_bitcode(&context, &fs::read(&args[1])?, "prepare input")?;
+            let entry = args[3].to_str().ok_or("entry must be UTF-8")?;
+            let module = llvm_metal_compiler::calls::prepare(&module, entry, policy)?;
+            if !module.write_bitcode_to_path(Path::new(&args[5])) {
+                return Err("could not write prepared bitcode".into());
+            }
+            Ok(())
+        })();
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("preparation failed: {e}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if args.len() == 1 && args[0] == "--help" {
         println!(
             "{USAGE}\n\nCompile the supported integer/buffer profile to AIR and metallib. Compilation does not execute GPU code."
@@ -22,6 +61,7 @@ fn main() -> ExitCode {
             Path::new(&args[3]),
             Path::new(&args[5]),
             args[2].to_str().unwrap(),
+            policy,
         ) {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
@@ -61,6 +101,7 @@ fn compile(
     interface_path: &Path,
     directory: &Path,
     mode: &str,
+    policy: llvm_metal_compiler::air::InliningPolicy,
 ) -> Result<(), Box<dyn Error>> {
     let bytes = fs::read(path)?;
     let context = Context::create();
@@ -92,7 +133,8 @@ fn compile(
     } else {
         serde_json::from_slice(&fs::read(interface_path)?)?
     };
-    let mut result = llvm_metal_compiler::compile::compile(&module, &interface)?;
+    let mut result =
+        llvm_metal_compiler::compile::compile_with_policy(&module, &interface, policy)?;
     if let Some(d) = descriptor {
         result.bindings = d.bindings()?;
     }

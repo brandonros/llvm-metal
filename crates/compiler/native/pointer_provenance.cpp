@@ -9,6 +9,16 @@ namespace llvm_metal {
 static bool privatePointer(llvm::Value *pointer, llvm::SmallPtrSetImpl<llvm::Value *> &visiting) {
     pointer = llvm::getUnderlyingObject(pointer);
     if (llvm::isa<llvm::AllocaInst>(pointer)) return true;
+    if (llvm::isa<llvm::PHINode>(pointer) || llvm::isa<llvm::SelectInst>(pointer)) {
+        if (!visiting.insert(pointer).second) return false;
+        llvm::SmallVector<const llvm::Value *, 8> objects;
+        llvm::getUnderlyingObjects(pointer, objects);
+        bool valid = !objects.empty();
+        for (auto *object : objects)
+            valid &= privatePointer(const_cast<llvm::Value *>(object), visiting);
+        visiting.erase(pointer);
+        return valid;
+    }
     auto *argument = llvm::dyn_cast<llvm::Argument>(pointer);
     if (!argument || !argument->getParent()->hasLocalLinkage() ||
         !visiting.insert(argument).second) return false;

@@ -28,7 +28,7 @@ fn check_type(
                 }
             }
             check_type(t.get_element_type(), source, destination)?;
-        },
+        }
         BasicTypeEnum::StructType(t) if !t.is_opaque() => {
             for (i, field) in t.get_field_types().into_iter().enumerate() {
                 check_type(field, source, destination)?;
@@ -270,9 +270,10 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                             .and_then(|o| o.value())
                             .and_then(|v| v.into_int_value().get_zero_extended_constant());
                         if volatile != Some(0) {
-                            return Err(
-                                format!("volatile memory intrinsics require explicit legalization: {}", instruction.print_to_string())
-                            );
+                            return Err(format!(
+                                "volatile memory intrinsics require explicit legalization: {}",
+                                instruction.print_to_string()
+                            ));
                         }
                     }
                 }
@@ -354,9 +355,27 @@ pub(crate) fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> 
     }
 }
 
+/// Experimental helper retention. The default preserves the established fully
+/// inlined profile. Scalar retention supports direct, nonrecursive internal calls.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum InliningPolicy {
+    #[default]
+    All,
+    RetainScalar,
+    Selective,
+}
+
 pub fn legalize<'ctx>(
     input: &Module<'ctx>,
     interface: &KernelInterface,
+) -> Result<(Module<'ctx>, MetalBindings), String> {
+    legalize_with_policy(input, interface, InliningPolicy::All)
+}
+
+pub fn legalize_with_policy<'ctx>(
+    input: &Module<'ctx>,
+    interface: &KernelInterface,
+    policy: InliningPolicy,
 ) -> Result<(Module<'ctx>, MetalBindings), String> {
     input.verify().map_err(|e| e.to_string())?;
     let bindings = interface.validate()?;
@@ -373,6 +392,7 @@ pub fn legalize<'ctx>(
     crate::wide::lower(&module)?;
     crate::odd::lower(&module)?;
     validate_input(&module)?;
+    let retained = crate::calls::retained(&module, &interface.entry, policy)?;
     let context = module.get_context();
     let implementation = module
         .get_function(&interface.entry)
@@ -403,13 +423,29 @@ pub fn legalize<'ctx>(
         function.set_linkage(Linkage::Internal);
         function.remove_string_attribute(AttributeLoc::Function, "target-cpu");
         function.remove_string_attribute(AttributeLoc::Function, "target-features");
-        function.remove_enum_attribute(
-            AttributeLoc::Function,
-            Attribute::get_named_enum_kind_id("noinline"),
-        );
+        function.remove_string_attribute(AttributeLoc::Function, "llvm-metal.retained");
+        let keep = retained.contains(&function.get_name().to_string_lossy().into_owned());
+        for name in ["alwaysinline", "noinline", "optnone"] {
+            function.remove_enum_attribute(
+                AttributeLoc::Function,
+                Attribute::get_named_enum_kind_id(name),
+            );
+        }
+        if keep {
+            // Internal fastcc has no external ABI. All direct call sites below
+            // are retargeted together to the supported AIR C convention.
+            function.set_call_conventions(0);
+            function.add_attribute(
+                AttributeLoc::Function,
+                context.create_string_attribute("llvm-metal.retained", ""),
+            );
+        }
         function.add_attribute(
             AttributeLoc::Function,
-            context.create_enum_attribute(Attribute::get_named_enum_kind_id("alwaysinline"), 0),
+            context.create_enum_attribute(
+                Attribute::get_named_enum_kind_id(if keep { "noinline" } else { "alwaysinline" }),
+                0,
+            ),
         );
         // Rust can also attach noinline to individual calls (e.g. subtle's
         // volatile barrier). Inlining preserves the volatile access itself.
@@ -420,10 +456,17 @@ pub fn legalize<'ctx>(
                         .get_called_fn_value()
                         .is_some_and(|f| f.count_basic_blocks() != 0)
                     {
-                        call.remove_enum_attribute(
-                            AttributeLoc::Function,
-                            Attribute::get_named_enum_kind_id("noinline"),
-                        );
+                        if call.get_called_fn_value().is_some_and(|callee| {
+                            retained.contains(&callee.get_name().to_string_lossy().into_owned())
+                        }) {
+                            call.set_call_convention(0);
+                        }
+                        for name in ["noinline", "alwaysinline"] {
+                            call.remove_enum_attribute(
+                                AttributeLoc::Function,
+                                Attribute::get_named_enum_kind_id(name),
+                            );
+                        }
                     }
                 }
             }
@@ -494,7 +537,7 @@ pub fn legalize<'ctx>(
         &module,
         "always-inline,function(sroa,instcombine<verify-fixpoint;max-iterations=4>),globaldce",
     )?;
-    for block in entry.get_basic_blocks() {
+    for block in module.get_functions().flat_map(|f| f.get_basic_blocks()) {
         let instructions: Vec<_> = block.get_instructions().collect();
         for instruction in instructions {
             if instruction.get_opcode() != InstructionOpcode::Call {
@@ -508,6 +551,9 @@ pub fn legalize<'ctx>(
             };
             let name = callee.get_name().to_string_lossy();
             let replacement = if name == "llvm_metal.linear_thread_index" {
+                if block.get_parent() != Some(entry) {
+                    return Err("thread-index helper was not inlined into the entry".into());
+                }
                 Some(
                     entry
                         .get_nth_param(interface.arguments.len() as u32)
@@ -584,6 +630,14 @@ pub fn legalize<'ctx>(
         LLVMMetalRemoveCodegenFlags(module.as_mut_ptr());
         LLVMMetalInferAddressSpaces(module.as_mut_ptr());
     }
+    if policy == InliningPolicy::Selective {
+        crate::calls::specialize(&module, &interface.entry)?;
+        // Specialization introduces generic casts only within the cloned bodies.
+        // Infer again with each formal parameter's actual Metal address space.
+        unsafe {
+            LLVMMetalInferAddressSpaces(module.as_mut_ptr());
+        }
+    }
     passes(
         &module,
         "function(instcombine<verify-fixpoint;max-iterations=4>,simplifycfg),globaldce",
@@ -591,7 +645,7 @@ pub fn legalize<'ctx>(
     // These are optimization/lifetime hints, not device operations. AIR does not
     // implement them. Dropping both dynamic scope declarations and alias facts
     // avoids carrying Rust's scoped alias model into a different backend.
-    for block in entry.get_basic_blocks() {
+    for block in module.get_functions().flat_map(|f| f.get_basic_blocks()) {
         let instructions: Vec<_> = block.get_instructions().collect();
         for instruction in instructions {
             use inkwell::values::AsValueRef;
@@ -841,13 +895,22 @@ pub fn legalize<'ctx>(
     }
     crate::memory::lower_dynamic_memory(&module)?;
     passes(&module, "strip-dead-prototypes")?;
-    if module
+    for function in module
         .get_functions()
-        .any(|f| f.count_basic_blocks() != 0 && f != entry)
+        .filter(|f| f.count_basic_blocks() != 0 && *f != entry)
     {
-        return Err("helper could not be inlined into the Metal entry".into());
+        if function
+            .get_string_attribute(AttributeLoc::Function, "llvm-metal.retained")
+            .is_none()
+        {
+            return Err("helper could not be inlined into the Metal entry".into());
+        }
     }
-    for block in entry.get_basic_blocks() {
+    crate::calls::validate(&module)?;
+    for function in module.get_functions() {
+        function.remove_string_attribute(AttributeLoc::Function, "llvm-metal.retained");
+    }
+    for block in module.get_functions().flat_map(|f| f.get_basic_blocks()) {
         if let Some(cast) = block
             .get_instructions()
             .find(|i| i.get_opcode() == InstructionOpcode::AddrSpaceCast)
@@ -869,7 +932,7 @@ pub fn legalize<'ctx>(
     {
         use inkwell::llvm_sys::{LLVMOpcode, core::*};
         let mut pending = Vec::new();
-        for block in entry.get_basic_blocks() {
+        for block in module.get_functions().flat_map(|f| f.get_basic_blocks()) {
             for instruction in block.get_instructions() {
                 // SAFETY: live verified instruction and bounded operand indices.
                 unsafe {
@@ -901,7 +964,9 @@ pub fn legalize<'ctx>(
                     let diagnostic = LLVMPrintValueToString(value);
                     let text = CStr::from_ptr(diagnostic).to_string_lossy().into_owned();
                     LLVMDisposeMessage(diagnostic);
-                    return Err(format!("constant pointer escaped address-space inference: {text}"));
+                    return Err(format!(
+                        "constant pointer escaped address-space inference: {text}"
+                    ));
                 }
                 for i in 0..LLVMGetNumOperands(value) {
                     pending.push(LLVMGetOperand(value, i as u32));
@@ -998,6 +1063,7 @@ pub fn legalize<'ctx>(
     unsafe {
         LLVMMetalPreparePhiConstants(module.as_mut_ptr());
     }
+    crate::calls::strip_modern_parameter_facts(&module);
     module.verify().map_err(|e| e.to_string())?;
     Ok((module, bindings))
 }
