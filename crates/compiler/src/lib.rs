@@ -79,6 +79,7 @@ fn verify(module: Module<'_>) -> Result<Module<'_>, InputError> {
 }
 pub mod air;
 pub mod compile;
+pub mod descriptor;
 mod wide;
 
 mod libcalls;

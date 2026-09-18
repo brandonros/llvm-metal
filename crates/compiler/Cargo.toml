@@ -9,6 +9,7 @@ publish = false
 [dependencies]
 inkwell.workspace = true
 llvm-metal-abi = { path = "../abi" }
+llvm-metal-kernel = { path = "../kernel" }
 llvm-metal-metallib = { path = "../metallib" }
 serde_json = "1"
 tempfile = "3"

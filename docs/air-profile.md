@@ -8,6 +8,62 @@ and read/write access. Entries return void and take generic pointers only.
 Buffers bind in argument order to Metal indices 0 onward. `aliasing` documents
 the producer contract; it is not a memory-safety proof or a generated noalias fact.
 
+## Typed Rust descriptors
+
+`llvm-metal-kernel` is an allocation-free `no_std` producer crate. `record!`
+declares a `repr(C)` record and derives its target size, alignment, field names,
+offsets and recursive field types. Padding is rejected. Supported transferable
+types are fixed-width signed/unsigned 8/16/32/64-bit integers, nonempty arrays,
+and records of those types. Pointers, references, `usize`, bool and Rust enums
+are not transferable records. Manual `DeviceLayout` implementations are unsafe.
+
+`kernel!` generates a C pointer entry, a named `Arguments<T>` host container,
+and a descriptor from one argument declaration. Arguments declare `Read`,
+`Write` or `ReadWrite` access and `Fixed` record or `Slice` element shape.
+`DESCRIPTOR` evaluates independently in host and device compilations. On NVPTX,
+the descriptor is exported as `__llvm_metal_descriptor_<entry>` and rooted in
+LLVM's compiler-used list. These annotations are a retention mechanism, not a
+promise that arbitrary subsequent optimizer invocations preserve metadata.
+
+Extract immediately after bitcode linking, before internalization or DCE:
+
+```sh
+llvm-metalc extract linked.bc --output extracted
+# Select an entry's descriptor from extracted/descriptors.json. Optimize
+# extracted/stripped.bc, preserving the selected entry, into kernel.bc.
+llvm-metalc compile kernel.bc --descriptor selected.json --output bundle
+```
+
+Extraction verifies every descriptor's symbol/entry association and C pointer
+signature. It removes descriptor globals and their retention roots while
+preserving unrelated roots, and rejects executable references to descriptors.
+The producer must keep the extracted descriptor associated with that exact
+module and record input/output hashes in its artifact provenance. Small inputs
+can use `compile input.bc --entry name --output bundle` directly. Existing
+`--interface` JSON remains supported for explicit LLVM fixtures and other users.
+
+The descriptor encoding is canonical, at most 16 KiB: little-endian u32 magic
+`0x00444d4c`, version 1, length-prefixed UTF-8 entry, u8 dispatch (single=0,
+grid1d=1), u8 endianness (little=0), u32 argument count, then argument records.
+Each contains a name, u8 access (read=0, write=1, read/write=2), u8 shape
+(fixed=0, slice=1), and a recursive layout. A layout is u32 size, u32 alignment,
+u8 kind (unsigned=0, signed=1, array=2, record=3). Arrays add a u32 count and
+element layout; records add a u32 field count and fields containing a name,
+u32 offset and layout. All strings use a u32 byte length; trailing bytes,
+unknown versions/tags, duplicate names, padding and inconsistent layouts fail.
+
+Generated Metal bindings retain the full descriptor. Call
+`validate_host_descriptor` against the independently compiled host declaration
+before pipeline creation. It compares field identities/layouts as well as the
+Metal buffer mapping, so equal total byte sizes do not hide reordered fields.
+`validate_lengths` checks fixed records and dynamic element counts with overflow
+protection. Empty slices require backed storage for one element. The launcher
+must still validate where those counts come from, dispatch bounds, disjoint
+storage, initialization and ownership. Descriptors do not prove that arbitrary
+kernel bodies obey their declared accesses.
+
+## LLVM operations
+
 Supported input includes 1/8/16/32/64-bit integer operations, branches, PHIs,
 and existing unreachable terminators (source undefined behavior),
 fixed vectors/arrays/structs with matching source/AIR layouts, stack allocations,
