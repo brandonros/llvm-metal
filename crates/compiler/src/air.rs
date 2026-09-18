@@ -324,7 +324,7 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
 }
 
 // AIR has no upstream TargetMachine. LLVM supports null for these generic passes.
-fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> {
+pub(crate) fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> {
     use inkwell::llvm_sys::{error::*, transforms::pass_builder::*};
     let pipeline = CString::new(pipeline).unwrap();
     // SAFETY: module/pipeline remain live; options and error messages are disposed.
@@ -362,6 +362,7 @@ pub fn legalize<'ctx>(
         LLVMMetalExpandPrivateVolatileCopies(module.as_mut_ptr());
     }
     crate::libcalls::lower(&module)?;
+    crate::wide_helpers::lower(&module)?;
     crate::wide::lower(&module)?;
     validate_input(&module)?;
     let context = module.get_context();

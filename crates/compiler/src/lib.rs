@@ -82,3 +82,5 @@ pub mod compile;
 mod wide;
 
 mod libcalls;
+
+mod wide_helpers;
