@@ -96,7 +96,7 @@ fn single_scalar_allocation_with_lifetime_markers_is_supported() {
     legalize(&module, &interface()).unwrap().0.verify().unwrap();
 }
 #[test]
-fn escaping_dynamic_and_aggregate_wide_allocations_are_refused() {
+fn escaping_dynamic_and_nested_aggregate_wide_allocations_are_refused() {
     let cases = [
         ("%slot = alloca i128\nstore ptr %slot, ptr %p", ""),
         (
@@ -108,7 +108,7 @@ fn escaping_dynamic_and_aggregate_wide_allocations_are_refused() {
             "",
         ),
         (
-            "%slot = alloca [2 x i128], align 16\nstore i128 1, ptr %slot",
+            "%slot = alloca [2 x [2 x i128]], align 16\nstore i128 1, ptr %slot",
             "",
         ),
         (

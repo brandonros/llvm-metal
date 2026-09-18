@@ -59,8 +59,11 @@ The pass preserves defined wrapping results and drops optional no-wrap flags.
 Private/defined-constant wide loads and private volatile stores split into
 i64 accesses; device wide loads and atomic wide accesses remain unsupported. Private
 scalar i128 allocas with constant element counts use `[2 x i64]` storage, retaining
-the explicit alignment, count and 16-byte GEP stride. Escaping pointers, unknown
-helper calls, dynamic counts and aggregate wide storage remain unsupported.
+the explicit alignment, count and 16-byte GEP stride. Private snapshots of
+one-dimensional `[1..256 x i128]` arrays support scalar extracts, preserving
+the complete load at its original position, including unused volatile elements.
+Their storage retains array stride and alignment. Escaping pointers, unknown
+helper calls, dynamic counts and other aggregate wide operations remain unsupported.
 Variable counts at least 128 preserve LLVM poison semantics. Local scalar-i128
 helper interfaces are inlined before splitting; escaping, recursive and external
 wide interfaces are refused. Wide division and vectors remain unsupported. Unsupported producers/consumers are
@@ -74,6 +77,17 @@ validation and after optimization. Odd-width storage types, globals, function
 ABIs, vectors, atomics and volatile operations remain outside this profile.
 CPU LLVM execution and guarded GPU tests cover arithmetic, comparisons, shifts,
 PHIs and conversions. Apple does not natively support the tested i24 operation.
+
+Dynamic nonvolatile `memcpy` and `memset` lower after optimization to two
+stride-two byte loops and an optional final byte. Zero-length operations access
+no memory. Narrow unsigned lengths widen to i64 before index arithmetic, avoiding
+one-bit shifts and signed GEP extension. Constant-size intrinsics retain LLVM's
+normal lowering; dynamic volatile copies and fills remain unsupported. The loop
+form survives LLVM O3 and loop-idiom recognition without relying on the additional
+`no-builtin-memcpy`/`no-builtin-memset` attributes. Guarded CPU and GPU tests cover
+private/device destinations, private/device/constant copy sources, unaligned spans,
+zero lengths and exact copy/fill bounds. This avoids the observed runtime-zero
+`memcpy` stall; a corresponding `memset` driver failure has not been established.
 
 `memcmp` and `bcmp` use unsigned byte comparisons and stop at the first mismatch;
 zero-length comparisons read no memory. Unsupported declarations are refused.

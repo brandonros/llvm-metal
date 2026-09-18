@@ -839,6 +839,7 @@ pub fn legalize<'ctx>(
             }
         }
     }
+    crate::memory::lower_dynamic_memory(&module)?;
     passes(&module, "strip-dead-prototypes")?;
     if module
         .get_functions()

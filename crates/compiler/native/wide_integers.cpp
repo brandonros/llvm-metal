@@ -29,21 +29,85 @@ struct Lower {
         return {nullptr, nullptr};
     }
 
+    // Only one-dimensional, bounded arrays are part of the private snapshot
+    // profile. Nested aggregates, aggregate calls/PHIs/stores and global ABI
+    // types remain unsupported.
+    static ArrayType *wideArray(Type *type) {
+        auto *array = dyn_cast<ArrayType>(type);
+        return array && array->getElementType()->isIntegerTy(128) &&
+                       array->getNumElements() > 0 && array->getNumElements() <= 256
+                   ? array : nullptr;
+    }
+
+    static Type *storageType(Type *type) {
+        auto *pair = ArrayType::get(Type::getInt64Ty(type->getContext()), 2);
+        if (type->isIntegerTy(128)) return pair;
+        if (auto *array = wideArray(type))
+            return ArrayType::get(pair, array->getNumElements());
+        return type;
+    }
+
+    bool lowerArraySnapshots(Module &module) {
+        SmallVector<LoadInst *, 8> loads;
+        for (auto &function : module)
+            for (auto &instruction : instructions(function))
+                if (auto *load = dyn_cast<LoadInst>(&instruction))
+                    if (wideArray(load->getType())) loads.push_back(load);
+        for (auto *load : loads) {
+            if (load->isAtomic() ||
+                !llvm_metal::privatePointer(load->getPointerOperand())) {
+                fail(load);
+                return false;
+            }
+            SmallVector<ExtractValueInst *, 16> extracts;
+            for (auto *user : load->users()) {
+                auto *extract = dyn_cast<ExtractValueInst>(user);
+                if (!extract || extract->getNumIndices() != 1 ||
+                    !extract->getType()->isIntegerTy(128)) {
+                    fail(user);
+                    return false;
+                }
+                extracts.push_back(extract);
+            }
+            auto count = wideArray(load->getType())->getNumElements();
+            SmallVector<Pair, 16> elements;
+            IRBuilder<> builder(load);
+            // Read the complete snapshot at the original load, before any
+            // intervening writes. Even unextracted volatile elements must read.
+            for (uint64_t index = 0; index < count; ++index) {
+                auto half = [&](uint64_t offset) -> Value * {
+                    auto *pointer = builder.CreateGEP(builder.getInt8Ty(),
+                        load->getPointerOperand(), builder.getInt64(offset));
+                    return builder.CreateAlignedLoad(builder.getInt64Ty(), pointer,
+                        commonAlignment(load->getAlign(), offset), load->isVolatile());
+                };
+                elements.push_back({half(index * 16), half(index * 16 + 8)});
+            }
+            for (auto *extract : extracts) {
+                values[extract] = elements[extract->getIndices()[0]];
+                erased.push_back(extract);
+            }
+            erased.push_back(load);
+        }
+        return true;
+    }
+
     bool normalizePrivateStorage(Module &module) {
         SmallVector<AllocaInst *, 8> allocations;
         for (auto &function : module)
             for (auto &instruction : instructions(function))
                 if (auto *allocation = dyn_cast<AllocaInst>(&instruction))
-                    if (allocation->getAllocatedType()->isIntegerTy(128))
+                    if (allocation->getAllocatedType()->isIntegerTy(128) ||
+                        wideArray(allocation->getAllocatedType()))
                         allocations.push_back(allocation);
         for (auto *allocation : allocations) {
-            auto *storage = ArrayType::get(Type::getInt64Ty(module.getContext()), 2);
+            auto *storage = storageType(allocation->getAllocatedType());
             const auto &layout = module.getDataLayout();
             if (allocation->getAddressSpace() != 0 ||
                 !isa<ConstantInt>(allocation->getArraySize()) ||
                 allocation->getArraySize()->getType()->getIntegerBitWidth() > 64 ||
-                layout.getTypeAllocSize(allocation->getAllocatedType()) != 16 ||
-                layout.getTypeAllocSize(storage) != 16) {
+                layout.getTypeAllocSize(allocation->getAllocatedType()) !=
+                    layout.getTypeAllocSize(storage)) {
                 fail(allocation);
                 return false;
             }
@@ -65,8 +129,8 @@ struct Lower {
                             store->getValueOperand() != pointer) continue;
                     } else if (auto *gep = dyn_cast<GetElementPtrInst>(user)) {
                         if (gep->getPointerOperand() == pointer) {
-                            if (gep->getSourceElementType()->isIntegerTy(128)) {
-                                if (gep->getNumIndices() != 1) { fail(gep); return false; }
+                            if (gep->getSourceElementType()->isIntegerTy(128) ||
+                                wideArray(gep->getSourceElementType())) {
                                 wideGeps.push_back(gep);
                             }
                             pending.push_back(gep);
@@ -92,12 +156,12 @@ struct Lower {
                 }
             }
             // Keep array count, address space, alignment and alloca flags. Each
-            // source i128 and each replacement [2 x i64] occupies exactly 16
-            // bytes, so indexed accesses preserve their original byte offsets.
+            // source i128 and replacement [2 x i64] has the same 16-byte stride;
+            // one-dimensional arrays keep their original element offsets too.
             allocation->setAllocatedType(storage);
             for (auto *gep : wideGeps) {
-                gep->setSourceElementType(storage);
-                gep->setResultElementType(storage);
+                gep->setSourceElementType(storageType(gep->getSourceElementType()));
+                gep->setResultElementType(storageType(gep->getResultElementType()));
             }
         }
         return true;
@@ -245,7 +309,7 @@ struct Lower {
             error = "i128 lowering requires little-endian memory";
             return false;
         }
-        if (!normalizePrivateStorage(module)) return false;
+        if (!normalizePrivateStorage(module) || !lowerArraySnapshots(module)) return false;
         SmallVector<Instruction *, 64> original;
         for (auto &f : module)
             for (auto &i : instructions(f)) original.push_back(&i);
