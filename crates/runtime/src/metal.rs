@@ -292,10 +292,14 @@ impl PreparedKernel {
     /// Returns whether new storage was allocated. Replaced storage is cleared.
     pub fn reconfigure(&mut self, buffers: &[Buffer]) -> Result<bool, String> {
         self.kernel.validate(buffers, 1, 1)?;
-        let shapes: Vec<_> = buffers.iter().map(|b| (b.bytes.len(), b.offset)).collect();
-        if shapes == self.shapes {
+        if buffers
+            .iter()
+            .map(|b| (b.bytes.len(), b.offset))
+            .eq(self.shapes.iter().copied())
+        {
             return Ok(false);
         }
+        let shapes: Vec<_> = buffers.iter().map(|b| (b.bytes.len(), b.offset)).collect();
         let resources = self.kernel.allocate(buffers)?;
         self.resources = resources;
         self.shapes = shapes;
