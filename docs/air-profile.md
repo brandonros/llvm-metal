@@ -81,7 +81,7 @@ Register-only i2 through i7 values also promote to i32 with the same masking and
 signed-operation rules. Loads, stores, aggregate storage and function ABIs using
 these sub-byte types are rejected. Exhaustive CPU comparisons against the original
 LLVM and Rust cover every operand pair at each width, including the i6 SEC1 tag
-bitset. Guarded GPU tests cover 1,008 operand pairs across these widths.
+bitset. Guarded GPU tests cover 1,004 operand pairs across these widths.
 
 Dynamic nonvolatile `memcpy` and `memset` lower after optimization to two
 stride-two byte loops and an optional final byte. Zero-length operations access
