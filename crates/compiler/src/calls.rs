@@ -157,10 +157,19 @@ fn select(
         return Ok(HashSet::new());
     }
     validate_calls(module, final_input)?;
+    // Measurement hooks: LLVM_METAL_RETAIN_REPORT prints one verdict line per
+    // defined function; LLVM_METAL_RETAIN_RELAX=<comma reasons> keeps matching
+    // exclusions retainable so their AIR cost can be measured. Neither changes
+    // default behavior.
+    let report = std::env::var_os("LLVM_METAL_RETAIN_REPORT").is_some();
+    let relaxed: Vec<String> = std::env::var("LLVM_METAL_RETAIN_RELAX")
+        .map(|v| v.split(',').map(|s| s.trim().to_owned()).collect())
+        .unwrap_or_default();
     // Propagate required inlining to callers: thread-index use needs the entry,
     // and unsupported runtime paths need caller facts before LLVM can eliminate
     // them. Never assume a panic guard is false or erase a runtime call ourselves.
-    let mut required = HashSet::from(["llvm_metal.linear_thread_index".to_owned()]);
+    let mut required_reason: std::collections::HashMap<String, &'static str> =
+        std::collections::HashMap::from([("llvm_metal.linear_thread_index".to_owned(), "thread_index")]);
     if !final_input {
         for f in module.get_functions() {
             let name = f.get_name().to_string_lossy().into_owned();
@@ -195,14 +204,34 @@ fn select(
                         _ => false,
                     }
                 });
-            if unsupported_external || indirect || pointer_memory {
-                required.insert(name);
+            let reason = if unsupported_external {
+                "unsupported_external"
+            } else if indirect {
+                "indirect_call"
+            } else if pointer_memory {
+                "pointer_memory"
+            } else {
+                continue;
+            };
+            if report {
+                eprintln!(
+                    "[retain-report] stage=prepare fn={name} instr={} verdict=seed reason={reason}",
+                    f.get_basic_blocks()
+                        .iter()
+                        .map(|b| b.get_instructions().count())
+                        .sum::<usize>(),
+                );
             }
+            required_reason.insert(name, reason);
         }
     }
     loop {
-        let before = required.len();
+        let before = required_reason.len();
         for f in module.get_functions() {
+            let name = f.get_name().to_string_lossy().into_owned();
+            if required_reason.contains_key(&name) {
+                continue;
+            }
             if f.get_basic_blocks()
                 .iter()
                 .flat_map(|b| b.get_instructions())
@@ -211,44 +240,96 @@ fn select(
                         .ok()
                         .and_then(|c| c.get_called_fn_value())
                         .is_some_and(|c| {
-                            required.contains(&c.get_name().to_string_lossy().into_owned())
+                            required_reason
+                                .contains_key(&c.get_name().to_string_lossy().into_owned())
                         })
                 })
             {
-                required.insert(f.get_name().to_string_lossy().into_owned());
+                required_reason.insert(name, "calls_required");
             }
         }
-        if required.len() == before {
+        if required_reason.len() == before {
             break;
         }
     }
-    Ok(module
-        .get_functions()
-        .filter(|f| {
-            f.count_basic_blocks() != 0
-                && supported_signature(*f, policy)
-                && !constant_initializer(*f)
-                // Keep producer optimization boundaries until final legalization;
-                // early expansion can create new unsupported storage widths.
-                && (!final_input || !nullable_pointer_loop(*f))
-                && matches!(f.get_linkage(), Linkage::Internal | Linkage::Private)
-                && !crate::wide_helpers::recursive(*f)
-                && crate::wide_helpers::direct_uses(*f).is_ok()
-                && (policy != InliningPolicy::Selective
-                    || f.get_enum_attribute(
-                        inkwell::attributes::AttributeLoc::Function,
-                        inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
-                    )
-                    .is_some()
-                    || f.get_basic_blocks()
-                        .iter()
-                        .map(|b| b.get_instructions().count())
-                        .sum::<usize>()
-                        >= 32)
-        })
-        .map(|f| f.get_name().to_string_lossy().into_owned())
-        .filter(|name| name != entry && !required.contains(name))
-        .collect())
+    let disqualify = |f: FunctionValue<'_>| -> Option<String> {
+        let name = f.get_name().to_string_lossy().into_owned();
+        let mut relaxed_reason = None;
+        if let Some(r) = required_reason.get(&name) {
+            // Final legalization must always inline thread-index callers; only
+            // preparation-stage requirements can be relaxed for measurement.
+            if final_input || !relaxed.iter().any(|x| x == r) {
+                return Some((*r).to_string());
+            }
+            relaxed_reason = Some(format!("relaxed:{r}"));
+        }
+        let reason = if name == entry {
+            Some("entry")
+        } else if !supported_signature(f, policy) {
+            Some("unsupported_signature")
+        } else if constant_initializer(f) {
+            Some("constant_initializer")
+        // Keep producer optimization boundaries until final legalization;
+        // early expansion can create new unsupported storage widths.
+        } else if final_input && nullable_pointer_loop(f) {
+            Some("nullable_pointer_loop")
+        } else if !matches!(f.get_linkage(), Linkage::Internal | Linkage::Private) {
+            Some("external_linkage")
+        } else if crate::wide_helpers::recursive(f) {
+            Some("recursive")
+        } else if crate::wide_helpers::direct_uses(f).is_err() {
+            Some("escaping_uses")
+        } else if policy == InliningPolicy::Selective
+            && f
+                .get_enum_attribute(
+                    inkwell::attributes::AttributeLoc::Function,
+                    inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
+                )
+                .is_none()
+            && f
+                .get_basic_blocks()
+                .iter()
+                .map(|b| b.get_instructions().count())
+                .sum::<usize>()
+                < 32
+        {
+            Some("below_threshold")
+        } else {
+            None
+        };
+        match reason {
+            // A relax flag helps only when the relaxed reason is the sole blocker.
+            Some(r) if relaxed.iter().any(|x| x == r) => relaxed_reason
+                .or(Some(format!("relaxed:{r}"))),
+            Some(r) => Some(r.to_string()),
+            None => relaxed_reason,
+        }
+    };
+    let mut kept = HashSet::new();
+    for f in module.get_functions() {
+        if f.count_basic_blocks() == 0 {
+            continue;
+        }
+        let name = f.get_name().to_string_lossy().into_owned();
+        let reason = disqualify(f);
+        let keep = reason.as_deref().is_none_or(|r| r.starts_with("relaxed:"));
+        if report {
+            eprintln!(
+                "[retain-report] stage={} fn={name} instr={} verdict={} reason={}",
+                if final_input { "final" } else { "prepare" },
+                f.get_basic_blocks()
+                    .iter()
+                    .map(|b| b.get_instructions().count())
+                    .sum::<usize>(),
+                if keep { "retained" } else { "inlined" },
+                reason.as_deref().unwrap_or("-"),
+            );
+        }
+        if keep {
+            kept.insert(name);
+        }
+    }
+    Ok(kept)
 }
 
 pub(crate) fn specialize(module: &Module<'_>, entry: &str) -> Result<(), String> {
