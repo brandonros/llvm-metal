@@ -67,10 +67,53 @@ kernel bodies obey their declared accesses.
 Supported input includes 1/8/16/32/64-bit integer operations, branches, PHIs,
 and existing unreachable terminators (source undefined behavior),
 fixed vectors/arrays/structs with matching source/AIR layouts, stack allocations,
-loads/stores, pointer helpers and constant integer/array globals. Defined C/fastcc
-helpers must inline completely. Surviving pointer address-space conversions are
-rejected. A type/opcode passing validation does not establish support for every
+loads/stores, pointer helpers and constant integer/array/struct globals. Defined C/fastcc
+helpers use selective inlining by default, as described below. Surviving pointer address-space conversions are rejected. A type/opcode passing validation does not establish support for every
 possible combination; library/pipeline creation remains a separate check.
+
+### Retained helpers and inlining
+
+`compile --inlining selective` retains internal, nonrecursive helpers with void
+or i8/i16/i32/i64 returns and scalar or pointer parameters. It retains eligible
+functions with at least 32 LLVM instructions or an explicit `noinline` request;
+smaller wrappers, constant-state initializers, and unsupported interfaces still inline. `retain-scalar` is a
+narrow diagnostic policy without pointer parameters. `selective` is the default in both library APIs and the CLI; `--inlining all`
+opts into full inlining. Internal C/fastcc definitions and all direct call sites are
+normalized together to C for AIR. Scalar-i128 interfaces and helpers depending
+on the entry's thread index continue to require inlining. Pointer/aggregate
+returns are not yet retained. Preparation also inlines helpers that transitively
+use unsupported runtime operations, indirect calls, or pointer-containing memory
+interfaces, allowing LLVM to eliminate
+unreachable paths using caller facts. Escaping callbacks may exist in producer
+bitcode but must disappear before final legalization; live unsupported paths
+still fail. Helpers combining loop-carried pointers with null-sentinel operations
+also require inlining during final legalization: retaining this iterator shape caused a P-256 matcher
+mismatch on Apple M5. Straight-line nullable pointer joins remain supported.
+Copy/stack ABI parameters (`byval`, `byref`,
+`inalloca`, `preallocated`, and nest/Swift context parameters) also require
+inlining; ordinary pointer parameters and tested `sret` parameters can remain.
+
+Consumers must preserve boundaries before their own optimization pipeline:
+internalize to the selected entry and remove dead functions, then run
+`llvm-metalc prepare selected.bc --entry name --output prepared.bc --inlining selective`.
+Optimize `prepared.bc` without globally forcing `alwaysinline`, and pass the
+same policy to `compile`. Producer fallback recursion can be eliminated by
+ordinary LLVM inlining/optimization; any recursion surviving into legalization
+is rejected. Function addresses must not escape, calls must be direct with
+matching conventions, and operand bundles and `musttail` calls are rejected.
+
+Pointer arguments specialize helpers by private/device/constant address-space
+signature, including nested calls and constant-table offsets. Private joins
+require proven private roots; loaded/unknown pointer flows fail. Specialization
+is bounded to 4096 instances. Legalization and pointer/metadata checks run in
+all surviving definitions. Private volatile accesses and zeroization are
+preserved. LLVM 21 parameter facts missing from the legacy writer's encoding
+are dropped explicitly; ABI attributes such as `sret` remain intact.
+
+The existing LLVM writer and metallib container carry the helper definitions.
+Retained LLVM calls do not promise how Apple's backend will optimize them.
+Measure AIR size, first/repeated library and pipeline creation, GPU execution,
+and correctness independently when tuning the policy or choosing full inlining.
 
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
 three-way comparison, scalar integer absolute value, leading/trailing-zero counts and signed/unsigned min/max,
