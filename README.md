@@ -22,6 +22,11 @@ Compilation writes AIR, `kernel.metallib`, and `kernel.bindings.json` to the
 output directory. Run `llvm-metalc --help` for CLI usage. Execute libraries
 through the `llvm-metal-runtime` crate on macOS with an Apple GPU.
 
+Apple's GPU compiler accepts only LLVM 14-encoded bitcode; newer encodings
+crash the OS compiler service. `llvm-downgrade` re-serializes the LLVM 21 AIR
+module into that encoding. This constraint is undocumented and was determined
+empirically (see Metal.jl/GPUCompiler.jl).
+
 ## Tests
 
 ```sh
