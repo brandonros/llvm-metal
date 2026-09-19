@@ -86,7 +86,10 @@ use unsupported runtime operations, indirect calls, or pointer-containing memory
 interfaces, allowing LLVM to eliminate
 unreachable paths using caller facts. Escaping callbacks may exist in producer
 bitcode but must disappear before final legalization; live unsupported paths
-still fail. Copy/stack ABI parameters (`byval`, `byref`,
+still fail. Helpers combining loop-carried pointers with null-sentinel operations
+also require inlining during final legalization: retaining this iterator shape caused a P-256 matcher
+mismatch on Apple M5. Straight-line nullable pointer joins remain supported.
+Copy/stack ABI parameters (`byval`, `byref`,
 `inalloca`, `preallocated`, and nest/Swift context parameters) also require
 inlining; ordinary pointer parameters and tested `sret` parameters can remain.
 

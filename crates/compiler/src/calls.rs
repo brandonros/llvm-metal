@@ -130,6 +130,16 @@ fn constant_initializer(f: FunctionValue<'_>) -> bool {
             })
 }
 
+fn nullable_pointer_loop(f: FunctionValue<'_>) -> bool {
+    unsafe extern "C" {
+        fn LLVMMetalHasNullablePointerLoop(
+            function: inkwell::llvm_sys::prelude::LLVMValueRef,
+        ) -> u32;
+    }
+    // SAFETY: read-only analysis of a verified live function.
+    unsafe { LLVMMetalHasNullablePointerLoop(f.as_value_ref()) != 0 }
+}
+
 pub(crate) fn retained(
     module: &Module<'_>,
     entry: &str,
@@ -218,6 +228,9 @@ fn select(
             f.count_basic_blocks() != 0
                 && supported_signature(*f, policy)
                 && !constant_initializer(*f)
+                // Keep producer optimization boundaries until final legalization;
+                // early expansion can create new unsupported storage widths.
+                && (!final_input || !nullable_pointer_loop(*f))
                 && matches!(f.get_linkage(), Linkage::Internal | Linkage::Private)
                 && !crate::wide_helpers::recursive(*f)
                 && crate::wide_helpers::direct_uses(*f).is_ok()
