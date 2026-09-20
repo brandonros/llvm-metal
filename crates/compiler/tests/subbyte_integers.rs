@@ -91,24 +91,7 @@ exit:
     ir
 }
 fn promote(module: &Module<'_>) -> Result<(), String> {
-    unsafe extern "C" {
-        fn LLVMMetalLowerOddIntegers(
-            module: inkwell::llvm_sys::prelude::LLVMModuleRef,
-        ) -> *mut std::ffi::c_char;
-    }
-    // SAFETY: owned test module; error string is allocated by LLVM.
-    unsafe {
-        let error = LLVMMetalLowerOddIntegers(module.as_mut_ptr());
-        if error.is_null() {
-            module.verify().map_err(|e| e.to_string())
-        } else {
-            let message = std::ffi::CStr::from_ptr(error)
-                .to_string_lossy()
-                .into_owned();
-            inkwell::llvm_sys::core::LLVMDisposeMessage(error);
-            Err(message)
-        }
-    }
+    llvm_metal_compiler::odd::lower(module)
 }
 fn cases(n: u32, exhaustive: bool, mut run: impl FnMut(&mut [u8])) {
     let mask = (1u32 << n) - 1;

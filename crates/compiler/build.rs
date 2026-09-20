@@ -9,7 +9,6 @@ fn main() {
         "native/phi_constants.cpp",
         "native/module_flags.cpp",
         "native/wide_integers.cpp",
-        "native/odd_integers.cpp",
     ];
     for source in sources {
         println!("cargo:rerun-if-changed={source}");

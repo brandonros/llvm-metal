@@ -86,7 +86,8 @@ mod libcalls;
 
 mod wide_helpers;
 
-mod odd;
+#[doc(hidden)]
+pub mod odd;
 
 mod memory;
 
