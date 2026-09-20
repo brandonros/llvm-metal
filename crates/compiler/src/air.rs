@@ -201,14 +201,10 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                 }
                 // Preserve private barriers and zeroization accesses. Do not generalize to
                 // device pointers, memory-mapped I/O, or synchronization.
-                unsafe extern "C" {
-                    fn LLVMMetalPrivateMemory(
-                        value: inkwell::llvm_sys::prelude::LLVMValueRef,
-                    ) -> bool;
-                }
-                // SAFETY: the native query only inspects this live instruction.
-                let private_volatile_memory =
-                    unsafe { LLVMMetalPrivateMemory(instruction.as_value_ref()) };
+                // SAFETY: the query only inspects this live instruction.
+                let private_volatile_memory = unsafe {
+                    crate::pointer_provenance::private_memory(instruction.as_value_ref())
+                };
                 if (instruction.get_opcode() == Load || instruction.get_opcode() == Store)
                     && ((instruction.get_volatile().unwrap_or(false) && !private_volatile_memory)
                         || instruction
@@ -336,6 +332,42 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
 }
 
 // AIR has no upstream TargetMachine. LLVM supports null for these generic passes.
+// Host position-independence flags do not apply to AIR, and Apple's pipeline
+// compiler fails on a kernel with retained helper functions that carries
+// "PIC Level" 2 (XPC_ERROR_CONNECTION_INTERRUPTED on Apple M5). LLVM's C API
+// cannot remove a module flag, but it can replace a flag's value: level 0 is
+// LLVM's "not PIC/PIE", the same meaning as an absent flag.
+fn neutralize_codegen_flags(module: &Module<'_>) {
+    use inkwell::llvm_sys::core::*;
+    let name = c"llvm.module.flags";
+    // SAFETY: verified live module with exclusive mutation. Each flag node has
+    // the verifier-checked shape {behavior, key string, value}.
+    unsafe {
+        let raw = module.as_mut_ptr();
+        let count = LLVMGetNamedMetadataNumOperands(raw, name.as_ptr());
+        let mut flags = vec![std::ptr::null_mut(); count as usize];
+        LLVMGetNamedMetadataOperands(raw, name.as_ptr(), flags.as_mut_ptr());
+        let context = LLVMGetModuleContext(raw);
+        for flag in flags {
+            if LLVMGetMDNodeNumOperands(flag) != 3 {
+                continue;
+            }
+            let mut operands = [std::ptr::null_mut(); 3];
+            LLVMGetMDNodeOperands(flag, operands.as_mut_ptr());
+            let mut length = 0;
+            let key = LLVMGetMDString(operands[1], &mut length);
+            if key.is_null() {
+                continue;
+            }
+            let key = std::slice::from_raw_parts(key.cast::<u8>(), length as usize);
+            if key == b"PIC Level" || key == b"PIE Level" {
+                let zero = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+                LLVMReplaceMDNodeOperandWith(flag, 2, LLVMValueAsMetadata(zero));
+            }
+        }
+    }
+}
+
 pub(crate) fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> {
     use inkwell::llvm_sys::{error::*, transforms::pass_builder::*};
     let pipeline = CString::new(pipeline).unwrap();
@@ -384,13 +416,7 @@ pub fn legalize_with_policy<'ctx>(
     input.verify().map_err(|e| e.to_string())?;
     let bindings = interface.validate()?;
     let module = input.clone();
-    unsafe extern "C" {
-        fn LLVMMetalExpandPrivateVolatileCopies(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
-    }
-    // SAFETY: verified disposable clone, bounded private copies only.
-    unsafe {
-        LLVMMetalExpandPrivateVolatileCopies(module.as_mut_ptr());
-    }
+    crate::volatile_copies::expand(&module);
     crate::libcalls::lower(&module)?;
     crate::wide_helpers::lower(&module)?;
     crate::wide::lower(&module)?;
@@ -625,22 +651,13 @@ pub fn legalize_with_policy<'ctx>(
             }
         }
     }
-    unsafe extern "C" {
-        fn LLVMMetalInferAddressSpaces(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
-        fn LLVMMetalRemoveCodegenFlags(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
-    }
-    // SAFETY: verified live module, exclusive mutation during the native pass.
-    unsafe {
-        LLVMMetalRemoveCodegenFlags(module.as_mut_ptr());
-        LLVMMetalInferAddressSpaces(module.as_mut_ptr());
-    }
+    neutralize_codegen_flags(&module);
+    crate::address_spaces::infer(&module);
     if policy == InliningPolicy::Selective {
         crate::calls::specialize(&module, &interface.entry)?;
         // Specialization introduces generic casts only within the cloned bodies.
         // Infer again with each formal parameter's actual Metal address space.
-        unsafe {
-            LLVMMetalInferAddressSpaces(module.as_mut_ptr());
-        }
+        crate::address_spaces::infer(&module);
     }
     passes(
         &module,
@@ -1059,14 +1076,7 @@ pub fn legalize_with_policy<'ctx>(
             .map_err(|e| e.to_string())?;
     }
     crate::odd::lower(&module)?;
-    unsafe extern "C" {
-        fn LLVMMetalPreparePhiConstants(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
-    }
-    // SAFETY: final verified-shape module; LLVM places constant-expression PHI
-    // operands on their incoming edges before the legacy writer handles them.
-    unsafe {
-        LLVMMetalPreparePhiConstants(module.as_mut_ptr());
-    }
+    crate::phi_constants::prepare(&module)?;
     crate::calls::strip_modern_parameter_facts(&module);
     module.verify().map_err(|e| e.to_string())?;
     Ok((module, bindings))

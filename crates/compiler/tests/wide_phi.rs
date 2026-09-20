@@ -95,3 +95,35 @@ fn wide_loop_carries_match_gpu() {
         }
     }
 }
+
+// A loop body listed before its header is reached before the header's PHI has
+// a placeholder, so lowering re-enters the body instruction through the PHI.
+#[test]
+fn body_listed_before_its_phi_is_lowered_and_erased_once() {
+    let source = r#"target triple = "nvptx64-nvidia-cuda"
+target datalayout = "e-p:64:64-i64:64-i128:128"
+define void @kernel(ptr %p) {
+entry:
+ %seed = load i64, ptr %p, align 8
+ %initial = zext i64 %seed to i128
+ br label %head
+body:
+ %next = add i128 %acc, 18446744073709551617
+ %j = add i32 %i, 1
+ br label %head
+head:
+ %i = phi i32 [0, %entry], [%j, %body]
+ %acc = phi i128 [%initial, %entry], [%next, %body]
+ %done = icmp eq i32 %i, 3
+ br i1 %done, label %exit, label %body
+exit:
+ %low = trunc i128 %acc to i64
+ store i64 %low, ptr %p, align 8
+ ret void
+}
+"#;
+    let context = Context::create();
+    let module = parse_ir(&context, source.as_bytes(), "wide-phi-order").unwrap();
+    llvm_metal_compiler::wide::lower(&module).unwrap();
+    assert!(!module.print_to_string().to_string().contains(" i128 "));
+}

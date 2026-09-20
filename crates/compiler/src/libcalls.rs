@@ -1,21 +1,33 @@
 //! Scalar, address-space-independent implementations of supported C operations.
-use inkwell::{AddressSpace, module::{Linkage, Module}};
+use inkwell::{
+    AddressSpace,
+    module::{Linkage, Module},
+};
 
 pub(crate) fn lower(module: &Module<'_>) -> Result<(), String> {
     for name in ["memcmp", "bcmp"] {
-        let Some(function) = module.get_function(name) else { continue };
-        if function.count_basic_blocks() != 0 { continue; }
+        let Some(function) = module.get_function(name) else {
+            continue;
+        };
+        if function.count_basic_blocks() != 0 {
+            continue;
+        }
         let context = module.get_context();
         let ptr = context.ptr_type(AddressSpace::default());
-        let expected = context.i32_type().fn_type(&[ptr.into(), ptr.into(), context.i64_type().into()], false);
+        let expected = context
+            .i32_type()
+            .fn_type(&[ptr.into(), ptr.into(), context.i64_type().into()], false);
         if function.get_type() != expected || function.get_call_conventions() != 0 {
-            return Err(format!("invalid {name} declaration: expected C i32(ptr, ptr, i64)"));
+            return Err(format!(
+                "invalid {name} declaration: expected C i32(ptr, ptr, i64)"
+            ));
         }
         // Read no byte when length is zero. Compare unsigned bytes in order;
         // the sign of the first difference implements both C contracts. The
         // bounded loop never reads beyond the supplied ranges and supports
         // overlapping/read-only storage. Address spaces are inferred later.
-        let ir = format!(r#"
+        let ir = format!(
+            r#"
             define i32 @{name}(ptr %a, ptr %b, i64 %n) {{
             entry:
               %empty = icmp eq i64 %n, 0
@@ -40,12 +52,25 @@ pub(crate) fn lower(module: &Module<'_>) -> Result<(), String> {
             equal:
               ret i32 0
             }}
-        "#);
-        let implementation = context.create_module_from_ir(inkwell::memory_buffer::MemoryBuffer::create_from_memory_range_copy(ir.as_bytes(), name)).map_err(|e| e.to_string())?;
+        "#
+        );
+        let implementation = context
+            .create_module_from_ir(
+                inkwell::memory_buffer::MemoryBuffer::create_from_memory_range_copy(
+                    ir.as_bytes(),
+                    name,
+                ),
+            )
+            .map_err(|e| e.to_string())?;
         implementation.set_triple(&module.get_triple());
         implementation.set_data_layout(&module.get_data_layout());
-        module.link_in_module(implementation).map_err(|e| e.to_string())?;
-        module.get_function(name).unwrap().set_linkage(Linkage::Internal);
+        module
+            .link_in_module(implementation)
+            .map_err(|e| e.to_string())?;
+        module
+            .get_function(name)
+            .unwrap()
+            .set_linkage(Linkage::Internal);
     }
     Ok(())
 }

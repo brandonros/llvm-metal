@@ -80,14 +80,30 @@ fn verify(module: Module<'_>) -> Result<Module<'_>, InputError> {
 pub mod air;
 pub mod compile;
 pub mod descriptor;
-mod wide;
+#[doc(hidden)]
+pub mod wide;
 
 mod libcalls;
 
 mod wide_helpers;
 
-mod odd;
+#[doc(hidden)]
+pub mod odd;
+
+mod clone;
+
+mod loops;
 
 mod memory;
+
+mod address_spaces;
+
+mod specialize;
+
+mod phi_constants;
+
+mod pointer_provenance;
+
+mod volatile_copies;
 
 pub mod calls;

@@ -210,8 +210,8 @@ a stack allocation. Source Rust wrappers declare these operations explicitly;
 stock Rust atomics/NVPTX intrinsics are not automatically substituted.
 
 Legalization maps buffer pointers to AIR address space 1 and constants to 2,
-using LLVM's address-space inference through a small C++ bridge. It removes
-source PIC/PIE code-generation flags and scoped alias/lifetime hints. Function
+using LLVM's address-space inference. It resets source PIC/PIE code-generation
+levels to zero and removes scoped alias/lifetime hints. Function
 and call-site noinline hints are removed to inline defined helpers. Other
 language semantics are preserved; no fixture name triggers a special lowering.
 Nullable pointer PHIs are explicitly typed only when all concrete underlying
