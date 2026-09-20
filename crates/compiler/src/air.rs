@@ -414,6 +414,9 @@ pub enum InliningPolicy {
     RetainScalar,
     #[default]
     Selective,
+    /// Selective retention, but LLVM's inliner decides about every helper that
+    /// may stay a call, and the pipeline optimizes for size.
+    Llvm,
 }
 
 pub fn legalize<'ctx>(
@@ -668,7 +671,7 @@ pub fn legalize_with_policy<'ctx>(
     }
     neutralize_codegen_flags(&module);
     crate::address_spaces::infer(&module);
-    if policy == InliningPolicy::Selective {
+    if matches!(policy, InliningPolicy::Selective | InliningPolicy::Llvm) {
         crate::calls::specialize(&module, &interface.entry)?;
         // Specialization introduces generic casts only within the cloned bodies.
         // Infer again with each formal parameter's actual Metal address space.

@@ -101,7 +101,9 @@ fn supported_signature(f: FunctionValue<'_>, policy: InliningPolicy) -> bool {
         && matches!(f.get_call_conventions(), 0 | 8)
         && f.get_type().get_return_type().is_none_or(scalar)
         && f.get_param_iter().all(|p| {
-            scalar(p.get_type()) || (policy == InliningPolicy::Selective && p.is_pointer_value())
+            scalar(p.get_type())
+                || (matches!(policy, InliningPolicy::Selective | InliningPolicy::Llvm)
+                    && p.is_pointer_value())
         })
 }
 // Constant initializers expose state fields (lengths, domains, tags) which
@@ -262,7 +264,7 @@ fn select(
                 && matches!(f.get_linkage(), Linkage::Internal | Linkage::Private)
                 && !crate::wide_helpers::recursive(*f)
                 && crate::wide_helpers::direct_uses(*f).is_ok()
-                && (policy != InliningPolicy::Selective
+                && (policy == InliningPolicy::RetainScalar
                     || f.get_enum_attribute(
                         inkwell::attributes::AttributeLoc::Function,
                         inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
@@ -313,7 +315,9 @@ pub fn prepare<'ctx>(
             );
         }
         // The selected entry remains externally visible to the upstream optimizer.
-        if function.get_name().to_bytes() != entry.as_bytes() {
+        if function.get_name().to_bytes() != entry.as_bytes()
+            && (keep || policy != InliningPolicy::Llvm)
+        {
             function.add_attribute(
                 AttributeLoc::Function,
                 context.create_enum_attribute(

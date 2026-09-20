@@ -16,6 +16,15 @@ pub const ALLOWED_UNDEFINED: [&str; 4] = [
     "bcmp",
 ];
 
+/// What to do with the panics Rust leaves in a kernel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Panics {
+    /// Refuse the kernel unless optimization proves every panic dead.
+    Refuse,
+    /// Assume no panic is reached; see `llvm::assume_no_panics`.
+    Unreachable,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage {
     /// Select, prepare, inline, clean up and compile.
@@ -31,6 +40,7 @@ pub struct Unit<'a> {
     pub input: &'a Path,
     pub descriptor: &'a Path,
     pub policy: InliningPolicy,
+    pub panics: Panics,
     pub stage: Stage,
     pub output: &'a Path,
 }
@@ -51,6 +61,9 @@ pub fn run(unit: &Unit<'_>) -> Result<(), String> {
         (InliningPolicy::All, Stage::Inline) => {
             // Select and discard unrelated exported entries before forced inlining.
             llvm::internalize(&module, &descriptor.entry)?;
+            if unit.panics == Panics::Unreachable {
+                llvm::assume_no_panics(&module, &ALLOWED_UNDEFINED);
+            }
             llvm::set_options(&NO_VECTORIZE);
             llvm::set_options(&[
                 "-force-remove-attribute=noinline",
@@ -75,9 +88,12 @@ pub fn run(unit: &Unit<'_>) -> Result<(), String> {
         }
         (policy, Stage::Whole) => {
             llvm::internalize(&module, &descriptor.entry)?;
+            if unit.panics == Panics::Unreachable {
+                llvm::assume_no_panics(&module, &ALLOWED_UNDEFINED);
+            }
             llvm::passes(
                 &module,
-                "globaldce,function(sroa,instcombine,simplifycfg,tailcallelim),globaldce,verify",
+                "globaldce,function(sroa,instcombine<no-verify-fixpoint>,simplifycfg,tailcallelim),globaldce,verify",
             )?;
             let module = reread(&contexts[1], &module)?;
             let prepared = match crate::calls::prepare(&module, &descriptor.entry, policy) {
@@ -91,14 +107,17 @@ pub fn run(unit: &Unit<'_>) -> Result<(), String> {
             llvm::set_options(&NO_VECTORIZE);
             llvm::passes(
                 &module,
-                "always-inline,default<O3>,globaldce,strip-dead-prototypes,verify",
+                &format!(
+                    "always-inline,default<{}>,globaldce,strip-dead-prototypes,verify",
+                    level(policy)
+                ),
             )?;
             inline_seconds = start.elapsed().as_secs_f64();
             reread(&contexts[3], &module)?
         }
     };
     // kernel.bc is what gets compiled, not the module in memory.
-    let bitcode = post_inline(inlined, &contexts[4])?.write_bitcode_to_memory();
+    let bitcode = post_inline(inlined, &contexts[4], unit.policy)?.write_bitcode_to_memory();
     let module =
         parse_bitcode(&contexts[5], bitcode.as_slice(), "input").map_err(|e| e.to_string())?;
     let post_inline_seconds = start.elapsed().as_secs_f64() - inline_seconds;
@@ -148,20 +167,37 @@ fn reread<'ctx>(context: &'ctx Context, module: &Module<'_>) -> Result<Module<'c
     .map_err(|e| e.to_string())
 }
 
+/// The optimization level of the default pipeline under a policy.
+fn level(policy: InliningPolicy) -> &'static str {
+    if policy == InliningPolicy::Llvm {
+        "Os"
+    } else {
+        "O3"
+    }
+}
+
 pub fn post_inline<'ctx>(
     module: Module<'_>,
     context: &'ctx Context,
+    policy: InliningPolicy,
 ) -> Result<Module<'ctx>, String> {
     // Canonicalize counters and unroll before O3's loop pipeline. Running O3
     // directly on the partly unrolled Bech32 8-to-5-bit loops makes its
     // ScalarEvolution predicate analysis take minutes (see optimizer fixture).
-    llvm::set_options(&["-unroll-threshold=1000"]);
-    llvm::passes(
-        &module,
-        "function(loop-simplify,lcssa,loop(indvars),loop-unroll,sroa,\
-         instcombine<verify-fixpoint;max-iterations=4>,simplifycfg),\
-         default<O3>,globaldce,strip-dead-prototypes,verify",
-    )?;
+    if policy == InliningPolicy::Llvm {
+        llvm::passes(
+            &module,
+            "default<Os>,globaldce,strip-dead-prototypes,verify",
+        )?;
+    } else {
+        llvm::set_options(&["-unroll-threshold=1000"]);
+        llvm::passes(
+            &module,
+            "function(loop-simplify,lcssa,loop(indvars),loop-unroll,sroa,\
+             instcombine<verify-fixpoint;max-iterations=4>,simplifycfg),\
+             default<O3>,globaldce,strip-dead-prototypes,verify",
+        )?;
+    }
     // Large inlined hash blocks exceed GVN's default backward scan budget.
     // Bounded cleanup exposes stored SHA buffer lengths/domain tags before the
     // unresolved-runtime check. Never replace panic calls or assume their guards.

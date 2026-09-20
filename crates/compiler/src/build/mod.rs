@@ -51,6 +51,7 @@ pub struct Build {
     pub input: Input,
     pub output: PathBuf,
     pub policy: InliningPolicy,
+    pub panics: unit::Panics,
     /// A group: `{"kernel": <entry>, "cases": [{"name", "entry", ...}]}`. Each
     /// case is built into `cases/<name>` and recorded in `kernel.group.json`.
     pub cases: Option<PathBuf>,
@@ -380,6 +381,13 @@ fn worker(build: &Build, stage: unit::Stage, input: &Path, directory: &Path) -> 
         .arg(directory)
         .args(["--inlining", policy_name(build.policy)])
         .args([
+            "--panics",
+            match build.panics {
+                unit::Panics::Refuse => "refuse",
+                unit::Panics::Unreachable => "unreachable",
+            },
+        ])
+        .args([
             "--stage",
             match stage {
                 unit::Stage::Whole => "whole",
@@ -400,6 +408,7 @@ pub fn policy_name(policy: InliningPolicy) -> &'static str {
         InliningPolicy::All => "all",
         InliningPolicy::RetainScalar => "retain-scalar",
         InliningPolicy::Selective => "selective",
+        InliningPolicy::Llvm => "llvm",
     }
 }
 

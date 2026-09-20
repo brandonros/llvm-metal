@@ -9,8 +9,8 @@ use std::{
     process::ExitCode,
 };
 
-const USAGE: &str = "Usage: llvm-metalc inspect <input.ll|input.bc> --entry <function>\n       llvm-metalc compile <input.ll|input.bc> <--interface json|--descriptor json|--entry name> --output <directory> [--inlining all|retain-scalar|selective]\n       llvm-metalc prepare <input.bc> --entry <function> --output <output.bc> --inlining <policy>\n       llvm-metalc extract <input.bc> --output <directory>
-       llvm-metalc build <--crate directory [--target-dir directory]|--rlib archive...> --output <directory> [--cases json [--case name]|--entry name] [--inlining policy] [--jobs n] [--keep-stage]";
+const USAGE: &str = "Usage: llvm-metalc inspect <input.ll|input.bc> --entry <function>\n       llvm-metalc compile <input.ll|input.bc> <--interface json|--descriptor json|--entry name> --output <directory> [--inlining all|retain-scalar|selective|llvm]\n       llvm-metalc prepare <input.bc> --entry <function> --output <output.bc> --inlining <policy>\n       llvm-metalc extract <input.bc> --output <directory>
+       llvm-metalc build <--crate directory [--target-dir directory]|--rlib archive...> --output <directory> [--cases json [--case name]|--entry name] [--inlining policy] [--panics refuse|unreachable] [--jobs n] [--keep-stage]";
 
 fn main() -> ExitCode {
     let mut args: Vec<_> = env::args_os().skip(1).collect();
@@ -26,8 +26,9 @@ fn main() -> ExitCode {
             Some("all") => llvm_metal_compiler::air::InliningPolicy::All,
             Some("retain-scalar") => llvm_metal_compiler::air::InliningPolicy::RetainScalar,
             Some("selective") => llvm_metal_compiler::air::InliningPolicy::Selective,
+            Some("llvm") => llvm_metal_compiler::air::InliningPolicy::Llvm,
             _ => {
-                eprintln!("--inlining requires all, retain-scalar, or selective");
+                eprintln!("--inlining requires all, retain-scalar, selective, or llvm");
                 return ExitCode::from(2);
             }
         };
@@ -149,6 +150,7 @@ fn build(
         "--jobs",
     ];
     let mut args = args.to_vec();
+    let panics = panics(&mut args)?;
     let keep_stage = args
         .iter()
         .position(|arg| arg == "--keep-stage")
@@ -202,6 +204,7 @@ fn build(
         input,
         output: one("--output")?.ok_or("--output is required")?,
         policy,
+        panics,
         cases: one("--cases")?,
         case: text("--case")?,
         entry: text("--entry")?,
@@ -213,12 +216,29 @@ fn build(
     Ok(())
 }
 
+/// Remove and parse `--panics refuse|unreachable`; refusing is the default.
+fn panics(args: &mut Vec<OsString>) -> Result<llvm_metal_compiler::build::unit::Panics, String> {
+    use llvm_metal_compiler::build::unit::Panics;
+    let Some(index) = args.iter().position(|arg| arg == "--panics") else {
+        return Ok(Panics::Refuse);
+    };
+    args.remove(index);
+    let value = (index < args.len()).then(|| args.remove(index));
+    match value.as_ref().and_then(|value| value.to_str()) {
+        Some("refuse") => Ok(Panics::Refuse),
+        Some("unreachable") => Ok(Panics::Unreachable),
+        _ => Err("--panics requires refuse or unreachable".into()),
+    }
+}
+
 /// One entry of a build, in a process of its own; see `build::unit`.
 fn build_unit(
     args: &[OsString],
     policy: llvm_metal_compiler::air::InliningPolicy,
 ) -> Result<(), String> {
     use llvm_metal_compiler::build::unit::{Stage, Unit, run};
+    let mut args = args.to_vec();
+    let panics = panics(&mut args)?;
     let (input, rest) = args
         .split_first()
         .ok_or("build-unit is internal to build")?;
@@ -240,6 +260,7 @@ fn build_unit(
         input: Path::new(input),
         descriptor: get("--descriptor")?,
         policy,
+        panics,
         stage,
         output: get("--output")?,
     })
