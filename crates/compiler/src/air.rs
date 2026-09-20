@@ -626,11 +626,17 @@ pub fn legalize_with_policy<'ctx>(
         }
     }
     unsafe extern "C" {
-        fn LLVMMetalRemoveCodegenFlags(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
+        // The C API cannot delete a module flag. See native/llvm_ext.cpp.
+        fn LLVMExtRemoveModuleFlag(
+            module: inkwell::llvm_sys::prelude::LLVMModuleRef,
+            key: *const std::ffi::c_char,
+            length: usize,
+        );
     }
-    // SAFETY: verified live module, exclusive mutation during the native pass.
-    unsafe {
-        LLVMMetalRemoveCodegenFlags(module.as_mut_ptr());
+    // Remove only host code-generation flags that do not apply to AIR.
+    for flag in ["PIC Level", "PIE Level"] {
+        // SAFETY: verified live module, exclusive mutation; the key outlives the call.
+        unsafe { LLVMExtRemoveModuleFlag(module.as_mut_ptr(), flag.as_ptr().cast(), flag.len()) };
     }
     crate::address_spaces::infer(&module);
     if policy == InliningPolicy::Selective {

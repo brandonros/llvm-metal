@@ -4,7 +4,6 @@ fn main() {
         "native/llvm_ext.cpp",
         "native/calls.cpp",
         "native/pointer_provenance.cpp",
-        "native/module_flags.cpp",
         "native/wide_integers.cpp",
     ];
     for source in sources {
