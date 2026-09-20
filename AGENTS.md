@@ -21,9 +21,9 @@ Each of these comes from a real mistake. #24 has the baselines to re-measure
 before and after a change.
 
 1. **One passing kernel proves nothing.** A change to what reaches Apple's
-   compiler is accepted only by vanity-miner's full run (`scripts/test-gpu.py
-   --suite all` with `VANITY_LLVM_METAL_SOURCE` set to this checkout: 203
-   self-test cases). Passing PIC/PIE flags through unchanged passed 212 tests and
+   compiler is accepted only by vanity-miner's full run (`scripts/test-gpu.sh
+   --suite all` in `nix develop --override-input llvm-metal path:<this checkout>`:
+   203 self-test cases). Passing PIC/PIE flags through unchanged passed 212 tests and
    one GPU kernel, then crashed Apple's pipeline compiler on two others.
 2. **Decide which layer is wrong before fixing it.** `urem i128` in a kernel was
    a kernel bug, not a reason to add 128-bit division here. `llvm.usub.sat` from

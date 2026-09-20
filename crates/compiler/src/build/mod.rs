@@ -180,9 +180,24 @@ fn device_archives(manifest: &Path, target_dir: &Path) -> Result<Vec<PathBuf>, S
     Ok(archives)
 }
 
-/// Every source file rustc read for the archives, from its dependency files,
-/// with the manifests and lockfile: what the bundle is attributable to.
-fn sources(manifest: &Path, archives: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+fn git(directory: &Path, arguments: &[&str]) -> Option<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(directory)
+        .args(arguments)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Every source file of the repository that rustc read for the archives, from
+/// its dependency files, with the manifests and lockfile: what the bundle is
+/// attributable to. Names are relative to the repository, so a bundle can be
+/// checked in another checkout. The lockfile pins the sources outside it.
+fn sources(manifest: &Path, archives: &[PathBuf]) -> Result<BTreeMap<String, PathBuf>, String> {
     let metadata: Value = serde_json::from_str(&capture(
         Command::new("cargo")
             .args(["metadata", "--locked", "--no-deps", "--format-version=1"])
@@ -230,15 +245,22 @@ fn sources(manifest: &Path, archives: &[PathBuf]) -> Result<Vec<PathBuf>, String
         }
         files.push(root.join(path));
     }
-    files.sort();
-    files.dedup();
-    Ok(files)
+    let repository = git(&root, &["rev-parse", "--show-toplevel"]).map_or(root, PathBuf::from);
+    let repository = fs::canonicalize(&repository).map_err(|e| e.to_string())?;
+    let mut named = BTreeMap::new();
+    for file in files {
+        let file = fs::canonicalize(&file).map_err(|e| format!("{}: {e}", file.display()))?;
+        if let Ok(name) = file.strip_prefix(&repository) {
+            named.insert(name.display().to_string(), file.clone());
+        }
+    }
+    Ok(named)
 }
 
-fn hashes(files: &[PathBuf]) -> Result<BTreeMap<String, String>, String> {
+fn hashes(files: &BTreeMap<String, PathBuf>) -> Result<BTreeMap<String, String>, String> {
     files
         .iter()
-        .map(|path| Ok((path.display().to_string(), digest_file(path)?)))
+        .map(|(name, path)| Ok((name.clone(), digest_file(path)?)))
         .collect()
 }
 
@@ -422,18 +444,19 @@ pub fn run(build: &Build) -> Result<Value, String> {
             let files = sources(manifest, &archives)?;
             (archives, files)
         }
-        Input::Archives(archives) => (archives.clone(), archives.clone()),
+        Input::Archives(archives) => {
+            let named = archives
+                .iter()
+                .map(|path| (path.display().to_string(), path.clone()));
+            (archives.clone(), named.collect())
+        }
     };
     let source_hashes = hashes(&files)?;
     let source_revision = match &build.input {
-        Input::Crate { manifest, .. } => Command::new("git")
-            .arg("-C")
-            .arg(manifest.parent().unwrap_or(Path::new(".")))
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string()),
+        Input::Crate { manifest, .. } => git(
+            manifest.parent().unwrap_or(Path::new(".")),
+            &["rev-parse", "HEAD"],
+        ),
         Input::Archives(_) => None,
     }
     .unwrap_or_else(|| "unknown".into());
