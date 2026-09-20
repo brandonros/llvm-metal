@@ -53,8 +53,8 @@ before and after a change.
   `bindgen`, `cxx` or `autocxx` dependency. Keep it that way. LLVM is reached
   only through its C API (`llvm-sys`, and Inkwell above it).
 - Rust cannot call LLVM's C++ API: the symbols are mangled, templated or inline.
-  When the C API lacks something, do not add a C++ shim, do not move one into
-  the `llvm-sys` or Inkwell forks, do not call mangled symbols, and do not
+  When the C API lacks something, do not add a C++ shim, do not fork
+  `llvm-sys` or Inkwell to hold one, do not call mangled symbols, and do not
   rewrite textual IR. First look for a Rust route. Every gap met so far had one:
 
   | Missing from the C API | What to do in Rust |
