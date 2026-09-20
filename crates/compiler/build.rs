@@ -5,7 +5,6 @@ fn main() {
         "native/address_spaces.cpp",
         "native/calls.cpp",
         "native/pointer_provenance.cpp",
-        "native/volatile_copies.cpp",
         "native/phi_constants.cpp",
         "native/module_flags.cpp",
         "native/wide_integers.cpp",

@@ -201,14 +201,20 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                 }
                 // Preserve private barriers and zeroization accesses. Do not generalize to
                 // device pointers, memory-mapped I/O, or synchronization.
-                unsafe extern "C" {
-                    fn LLVMMetalPrivateMemory(
-                        value: inkwell::llvm_sys::prelude::LLVMValueRef,
-                    ) -> bool;
+                // SAFETY: the query only inspects this live instruction.
+                let private_volatile_memory = unsafe {
+                    crate::pointer_provenance::private_memory(instruction.as_value_ref())
+                };
+                if crate::parity::enabled() {
+                    unsafe extern "C" {
+                        fn LLVMMetalPrivateMemory(
+                            value: inkwell::llvm_sys::prelude::LLVMValueRef,
+                        ) -> bool;
+                    }
+                    // SAFETY: the native query only inspects this live instruction.
+                    let reference = unsafe { LLVMMetalPrivateMemory(instruction.as_value_ref()) };
+                    assert_eq!(reference, private_volatile_memory, "provenance parity");
                 }
-                // SAFETY: the native query only inspects this live instruction.
-                let private_volatile_memory =
-                    unsafe { LLVMMetalPrivateMemory(instruction.as_value_ref()) };
                 if (instruction.get_opcode() == Load || instruction.get_opcode() == Store)
                     && ((instruction.get_volatile().unwrap_or(false) && !private_volatile_memory)
                         || instruction
@@ -384,13 +390,7 @@ pub fn legalize_with_policy<'ctx>(
     input.verify().map_err(|e| e.to_string())?;
     let bindings = interface.validate()?;
     let module = input.clone();
-    unsafe extern "C" {
-        fn LLVMMetalExpandPrivateVolatileCopies(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
-    }
-    // SAFETY: verified disposable clone, bounded private copies only.
-    unsafe {
-        LLVMMetalExpandPrivateVolatileCopies(module.as_mut_ptr());
-    }
+    crate::volatile_copies::expand(&module);
     crate::libcalls::lower(&module)?;
     crate::wide_helpers::lower(&module)?;
     crate::wide::lower(&module)?;

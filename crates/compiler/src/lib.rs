@@ -91,4 +91,10 @@ pub mod odd;
 
 mod memory;
 
+mod parity;
+
+mod pointer_provenance;
+
+mod volatile_copies;
+
 pub mod calls;
