@@ -25,7 +25,26 @@ the descriptor is exported as `__llvm_metal_descriptor_<entry>` and rooted in
 LLVM's compiler-used list. These annotations are a retention mechanism, not a
 promise that arbitrary subsequent optimizer invocations preserve metadata.
 
-Extract immediately after bitcode linking, before internalization or DCE:
+`llvm-metalc build` runs the whole producer: it compiles a kernel crate for
+`nvptx64-nvidia-cuda` with the Rust on `PATH`, links the bitcode in its archives,
+extracts descriptors, then selects, prepares, optimizes, checks and compiles each
+entry into a bundle with a `kernel.build.json` manifest.
+
+```sh
+llvm-metalc build --crate crates/kernels/solana --output bundle
+llvm-metalc build --rlib liba.rlib --rlib libb.rlib --output bundle   # archives Cargo already built
+```
+
+The Rust toolchain is the only thing a consumer supplies, and its LLVM must be
+the linked LLVM's major and no newer. With `--cases group.json`
+(`{"kernel": entry, "cases": [{"name", "entry", ...}]}`) every case is built from
+one link into `cases/<name>`, in parallel, and listed in `kernel.group.json`.
+Archives are linked in file-name order, so the same sources give the same bundle.
+Each entry is optimized in a process of its own because LLVM's options are
+process-wide. `--keep-stage` keeps the intermediate modules.
+
+The steps are also available separately. Extract immediately after bitcode
+linking, before internalization or DCE:
 
 ```sh
 llvm-metalc extract linked.bc --output extracted

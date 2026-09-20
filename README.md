@@ -11,6 +11,16 @@ Use Nix with flakes enabled. The development shells supply LLVM, Rust, and
 
 ```sh
 nix develop --command cargo build --locked --workspace
+nix develop .#rust-fixtures --command cargo run --locked -p llvm-metal-compiler --bin llvm-metalc -- \
+  build --crate path/to/kernel-crate --output target/compiled/kernel
+```
+
+`build` compiles the crate for `nvptx64-nvidia-cuda` with the Rust on `PATH` and
+produces one bundle per entry. Consumers need no LLVM of their own: the flake
+exports the compiler with its LLVM and `llvm-downgrade` as
+`packages.<system>.llvm-metalc`. To compile bitcode that already exists:
+
+```sh
 nix develop .#rust-fixtures --command python3 tests/rust-fixtures/build.py
 nix develop --command cargo run --locked -p llvm-metal-compiler --bin llvm-metalc -- \
   compile target/rust-fixtures/shallenge/kernel.bc \

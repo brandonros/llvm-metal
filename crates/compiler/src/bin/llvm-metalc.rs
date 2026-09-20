@@ -1,18 +1,25 @@
 use inkwell::context::Context;
 use llvm_metal_compiler::{parse_bitcode, parse_ir, require_entry};
-use std::{env, error::Error, fs, path::Path, process::ExitCode};
+use std::{
+    env,
+    error::Error,
+    ffi::OsString,
+    fs,
+    path::{Path, PathBuf},
+    process::ExitCode,
+};
 
-const USAGE: &str = "Usage: llvm-metalc inspect <input.ll|input.bc> --entry <function>\n       llvm-metalc compile <input.ll|input.bc> <--interface json|--descriptor json|--entry name> --output <directory> [--inlining all|retain-scalar|selective]\n       llvm-metalc prepare <input.bc> --entry <function> --output <output.bc> --inlining <policy>\n       llvm-metalc extract <input.bc> --output <directory>";
+const USAGE: &str = "Usage: llvm-metalc inspect <input.ll|input.bc> --entry <function>\n       llvm-metalc compile <input.ll|input.bc> <--interface json|--descriptor json|--entry name> --output <directory> [--inlining all|retain-scalar|selective]\n       llvm-metalc prepare <input.bc> --entry <function> --output <output.bc> --inlining <policy>\n       llvm-metalc extract <input.bc> --output <directory>
+       llvm-metalc build <--crate directory [--target-dir directory]|--rlib archive...> --output <directory> [--cases json [--case name]|--entry name] [--inlining policy] [--jobs n] [--keep-stage]";
 
 fn main() -> ExitCode {
     let mut args: Vec<_> = env::args_os().skip(1).collect();
     let mut policy = llvm_metal_compiler::air::InliningPolicy::default();
     if let Some(index) = args.iter().position(|arg| arg == "--inlining") {
-        if !args
-            .first()
-            .is_some_and(|arg| arg == "compile" || arg == "prepare")
-        {
-            eprintln!("--inlining is supported only by compile and prepare");
+        if !args.first().is_some_and(|arg| {
+            arg == "compile" || arg == "prepare" || arg == "build" || arg == "build-unit"
+        }) {
+            eprintln!("--inlining is supported only by build, compile and prepare");
             return ExitCode::from(2);
         }
         policy = match args.get(index + 1).and_then(|arg| arg.to_str()) {
@@ -25,6 +32,23 @@ fn main() -> ExitCode {
             }
         };
         args.drain(index..index + 2);
+    }
+    if args
+        .first()
+        .is_some_and(|arg| arg == "build" || arg == "build-unit")
+    {
+        let result = if args[0] == "build" {
+            build(&args[1..], policy)
+        } else {
+            build_unit(&args[1..], policy)
+        };
+        return match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("build failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
     }
     if args.len() == 6 && args[0] == "prepare" && args[2] == "--entry" && args[4] == "--output" {
         let result = (|| -> Result<(), Box<dyn Error>> {
@@ -94,6 +118,131 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Split `--flag value` arguments; a flag may repeat.
+fn flags(args: &[OsString], known: &[&str]) -> Result<Vec<(String, PathBuf)>, String> {
+    let mut pairs = Vec::new();
+    for pair in args.chunks(2) {
+        let flag = pair[0].to_str().unwrap_or_default();
+        if !known.contains(&flag) || pair.len() != 2 {
+            return Err(format!("unexpected argument {:?}\n{USAGE}", pair[0]));
+        }
+        pairs.push((flag.to_string(), PathBuf::from(&pair[1])));
+    }
+    Ok(pairs)
+}
+
+fn build(
+    args: &[OsString],
+    policy: llvm_metal_compiler::air::InliningPolicy,
+) -> Result<(), String> {
+    use llvm_metal_compiler::build::{Build, Input, run};
+    let known = [
+        "--crate",
+        "--target-dir",
+        "--rlib",
+        "--output",
+        "--cases",
+        "--case",
+        "--entry",
+        "--jobs",
+    ];
+    let mut args = args.to_vec();
+    let keep_stage = args
+        .iter()
+        .position(|arg| arg == "--keep-stage")
+        .map(|i| args.remove(i));
+    let pairs = flags(&args, &known)?;
+    let all = |flag: &str| -> Vec<PathBuf> {
+        let matching = pairs.iter().filter(|(name, _)| name == flag);
+        matching.map(|(_, value)| value.clone()).collect()
+    };
+    // Cargo reports absolute paths, which the builder compares with these.
+    let absolute = |path: PathBuf| std::path::absolute(&path).map_err(|e| e.to_string());
+    let one = |flag: &str| -> Result<Option<PathBuf>, String> {
+        let mut values = all(flag).into_iter();
+        match (values.next(), values.next()) {
+            (Some(value), None) if flag != "--case" && flag != "--entry" && flag != "--jobs" => {
+                absolute(value).map(Some)
+            }
+            (value, None) => Ok(value),
+            _ => Err(format!("{flag} given more than once")),
+        }
+    };
+    let text = |flag: &str| -> Result<Option<String>, String> {
+        one(flag)?
+            .map(|value| {
+                value
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_| format!("{flag} must be UTF-8"))
+            })
+            .transpose()
+    };
+    let archives = all("--rlib");
+    let input = match (one("--crate")?, archives.is_empty()) {
+        (Some(directory), true) => {
+            let directory = fs::canonicalize(&directory)
+                .map_err(|e| format!("{}: {e}", directory.display()))?;
+            Input::Crate {
+                target_dir: one("--target-dir")?
+                    .unwrap_or_else(|| directory.join("target/llvm-metal")),
+                manifest: directory.join("Cargo.toml"),
+            }
+        }
+        (None, false) => Input::Archives(archives),
+        _ => return Err(format!("pass either --crate or --rlib\n{USAGE}")),
+    };
+    let jobs = match text("--jobs")? {
+        Some(jobs) => jobs.parse().map_err(|_| "--jobs requires a number")?,
+        None => std::thread::available_parallelism().map_or(1, usize::from),
+    };
+    let summary = run(&Build {
+        input,
+        output: one("--output")?.ok_or("--output is required")?,
+        policy,
+        cases: one("--cases")?,
+        case: text("--case")?,
+        entry: text("--entry")?,
+        jobs,
+        keep_stage: keep_stage.is_some(),
+        program: env::current_exe().map_err(|e| e.to_string())?,
+    })?;
+    println!("{summary}");
+    Ok(())
+}
+
+/// One entry of a build, in a process of its own; see `build::unit`.
+fn build_unit(
+    args: &[OsString],
+    policy: llvm_metal_compiler::air::InliningPolicy,
+) -> Result<(), String> {
+    use llvm_metal_compiler::build::unit::{Stage, Unit, run};
+    let (input, rest) = args
+        .split_first()
+        .ok_or("build-unit is internal to build")?;
+    let pairs = flags(rest, &["--descriptor", "--output", "--stage"])?;
+    let get = |flag: &str| {
+        pairs
+            .iter()
+            .find(|(name, _)| name == flag)
+            .map(|(_, value)| value.as_path())
+            .ok_or(format!("build-unit requires {flag}"))
+    };
+    let stage = match get("--stage")?.to_str() {
+        Some("whole") => Stage::Whole,
+        Some("inline") => Stage::Inline,
+        Some("post") => Stage::Post,
+        _ => return Err("--stage requires whole, inline, or post".into()),
+    };
+    run(&Unit {
+        input: Path::new(input),
+        descriptor: get("--descriptor")?,
+        policy,
+        stage,
+        output: get("--output")?,
+    })
 }
 
 fn compile(

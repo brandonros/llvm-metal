@@ -9,12 +9,12 @@
     flake = false;
   };
 
-  outputs = { nixpkgs, rust-overlay, llvm-downgrade, ... }:
+  outputs = { self, nixpkgs, rust-overlay, llvm-downgrade, ... }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
       forEachSystem = nixpkgs.lib.genAttrs systems;
-    in {
-      devShells = forEachSystem (system:
+      # Everything that depends on the system, shared by the shells and the package.
+      perSystem = forEachSystem (system:
         let
           pkgs = import nixpkgs {
             inherit system;
@@ -36,11 +36,31 @@
           # Official stable distribution: its LLVM must match `llvm` above, and
           # the NVPTX target produces the fixture bitcode.
           toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          # What a consumer needs: the compiler with its LLVM and llvm-downgrade.
+          # The consumer supplies only the Rust toolchain that produces bitcode.
+          llvm-metalc = pkgs.rustPlatform.buildRustPackage {
+            pname = "llvm-metalc";
+            version = "0.1.0";
+            src = self;
+            cargoLock.lockFile = ./Cargo.lock;
+            cargoBuildFlags = [ "-p" "llvm-metal-compiler" "--bin" "llvm-metalc" ];
+            doCheck = false;
+            nativeBuildInputs = [ pkgs.makeWrapper ];
+            buildInputs = [ llvm pkgs.libffi ];
+            LLVM_SYS_221_PREFIX = "${llvm.dev}";
+            postInstall = "wrapProgram $out/bin/llvm-metalc --prefix PATH : ${downgrade}/bin";
+          };
           shell = pkgs.mkShell {
             packages = [ toolchain llvm downgrade pkgs.python3 ];
             buildInputs = [ pkgs.libffi ];
             LLVM_SYS_221_PREFIX = "${llvm.dev}";
           };
-        in { default = shell; rust-fixtures = shell; });
+        in {
+          packages = { inherit llvm-metalc; default = llvm-metalc; };
+          devShells = { default = shell; rust-fixtures = shell; };
+        });
+    in {
+      packages = builtins.mapAttrs (_: outputs: outputs.packages) perSystem;
+      devShells = builtins.mapAttrs (_: outputs: outputs.devShells) perSystem;
     };
 }

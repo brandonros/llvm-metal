@@ -78,6 +78,7 @@ fn verify(module: Module<'_>) -> Result<Module<'_>, InputError> {
     Ok(module)
 }
 pub mod air;
+pub mod build;
 pub mod compile;
 pub mod descriptor;
 #[doc(hidden)]
