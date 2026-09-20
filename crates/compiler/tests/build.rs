@@ -106,7 +106,7 @@ fn build_rejects_ambiguous_or_missing_inputs() {
 }
 
 #[test]
-#[ignore = "requires the stock Rust NVPTX producer and llvm-downgrade in .#rust-fixtures"]
+#[ignore = "requires the stock Rust NVPTX producer and llvm-downgrade in the Nix shell"]
 fn builds_a_stock_rust_kernel_reproducibly() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let directory = root.join("target/metal-tests/build");

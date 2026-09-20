@@ -107,7 +107,5 @@ against it and known-answer vectors; do not derive expected results from the new
 backend. Keep parsing, legalization, packaging, pipeline creation and execution
 results separate so a frontend success never stands in for GPU correctness.
 
-The separate [Rust integration lane](../rust-fixtures/README.md) compiles a pinned
-vanity-miner dependency with a pinned stock toolchain. Its generated `.ll` and
-`.bc` remain under `target/`; promote a reduced capture here when it becomes a
-specific compiler regression. Ordinary compiler tests do not rebuild that crate.
+Application workloads are accepted in vanity-miner-rs. Promote a reduced capture
+of one of its kernels here when it becomes a specific compiler regression.

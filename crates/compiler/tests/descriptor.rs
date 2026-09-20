@@ -69,7 +69,7 @@ fn extract_preserves_unrelated_retention_and_rejects_wrong_entries() {
 
 #[cfg(target_os = "macos")]
 #[test]
-#[ignore = "requires stock Rust NVPTX producer, LLVM tools and Apple GPU in .#rust-fixtures"]
+#[ignore = "requires stock Rust NVPTX producer, LLVM tools and Apple GPU in the Nix shell"]
 fn stock_rust_descriptor_survives_and_executes() {
     use llvm_metal_runtime::{Buffer, Kernel};
     use std::{fs, path::PathBuf, process::Command};

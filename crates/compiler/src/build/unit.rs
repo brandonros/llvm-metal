@@ -148,7 +148,10 @@ fn reread<'ctx>(context: &'ctx Context, module: &Module<'_>) -> Result<Module<'c
     .map_err(|e| e.to_string())
 }
 
-fn post_inline<'ctx>(module: Module<'_>, context: &'ctx Context) -> Result<Module<'ctx>, String> {
+pub fn post_inline<'ctx>(
+    module: Module<'_>,
+    context: &'ctx Context,
+) -> Result<Module<'ctx>, String> {
     // Canonicalize counters and unroll before O3's loop pipeline. Running O3
     // directly on the partly unrolled Bech32 8-to-5-bit loops makes its
     // ScalarEvolution predicate analysis take minutes (see optimizer fixture).

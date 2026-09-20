@@ -34,7 +34,7 @@
             ];
           };
           # Official stable distribution: its LLVM must match `llvm` above, and
-          # the NVPTX target produces the fixture bitcode.
+          # its NVPTX target produces the test kernels' bitcode.
           toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           # What a consumer needs: the compiler with its LLVM and llvm-downgrade.
           # The consumer supplies only the Rust toolchain that produces bitcode.
@@ -51,13 +51,13 @@
             postInstall = "wrapProgram $out/bin/llvm-metalc --prefix PATH : ${downgrade}/bin";
           };
           shell = pkgs.mkShell {
-            packages = [ toolchain llvm downgrade pkgs.python3 ];
+            packages = [ toolchain llvm downgrade ];
             buildInputs = [ pkgs.libffi ];
             LLVM_SYS_221_PREFIX = "${llvm.dev}";
           };
         in {
           packages = { inherit llvm-metalc; default = llvm-metalc; };
-          devShells = { default = shell; rust-fixtures = shell; };
+          devShells.default = shell;
         });
     in {
       packages = builtins.mapAttrs (_: outputs: outputs.packages) perSystem;

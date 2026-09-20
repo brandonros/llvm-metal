@@ -1,13 +1,11 @@
 # Development
 
-- Use the development shells selected by `flake.lock`: `nix develop --command`
-  for compiler work and `nix develop .#rust-fixtures --command` for Rust fixtures.
-  Use `path:.` or `path:.#rust-fixtures` when inputs include untracked files.
+- Use the development shell selected by `flake.lock`: `nix develop --command`.
+  Use `path:.` when inputs include untracked files.
 - Start with focused regression tests, then run affected integration tests and
   `nix develop --command cargo test --locked --workspace` after code changes.
-- Run GPU tests explicitly on macOS with an Apple GPU. Run fixture tests serially
-  because they share output directories. Follow `tests/rust-fixtures/README.md`
-  for prerequisites and commands.
+- Run GPU tests explicitly on macOS with an Apple GPU, serially: they share
+  output directories.
 - Distinguish LLVM verification, Metal library/pipeline creation, and checked GPU
   execution. Report which stages ran and any failures or missing prerequisites.
 - Scope validation claims to the tested source, toolchain, inputs, GPU, and OS.
