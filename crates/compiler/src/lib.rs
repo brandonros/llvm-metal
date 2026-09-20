@@ -100,8 +100,6 @@ mod address_spaces;
 
 mod specialize;
 
-mod parity;
-
 mod phi_constants;
 
 mod pointer_provenance;

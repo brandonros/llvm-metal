@@ -18,16 +18,6 @@ use std::collections::{HashMap, HashSet};
 const RETAINED: &str = "llvm-metal.retained";
 const LIMIT: usize = 4096;
 
-unsafe extern "C" {
-    fn LLVMExtCloneFunctionInto(
-        to: LLVMValueRef,
-        from: LLVMValueRef,
-        keys: *mut LLVMValueRef,
-        mapped: *mut LLVMValueRef,
-        count: u32,
-    ) -> LLVMBasicBlockRef;
-}
-
 unsafe fn pointer(value: LLVMValueRef) -> bool {
     unsafe { LLVMGetTypeKind(LLVMTypeOf(value)) == LLVMTypeKind::LLVMPointerTypeKind }
 }
@@ -132,7 +122,6 @@ unsafe fn specialized(
     callee: LLVMValueRef,
     arguments: &[LLVMValueRef],
     spaces: &[u32],
-    shim: bool,
 ) -> Result<LLVMValueRef, String> {
     unsafe {
         let mut types: Vec<_> = arguments.iter().map(|&a| LLVMTypeOf(a)).collect();
@@ -165,24 +154,15 @@ unsafe fn specialized(
                 LLVMBuildAddrSpaceCast(builder, new, LLVMTypeOf(old), c"generic.arg".as_ptr())
             });
         }
-        let entry = if shim {
-            LLVMExtCloneFunctionInto(
-                function,
-                callee,
-                keys.as_mut_ptr(),
-                mapped.as_mut_ptr(),
-                keys.len() as u32,
-            )
-        } else {
-            crate::clone::function_into(function, callee, keys.into_iter().zip(mapped).collect())?
-        };
+        let entry =
+            crate::clone::function_into(function, callee, keys.into_iter().zip(mapped).collect())?;
         LLVMPositionBuilderAtEnd(builder, prelude);
         LLVMBuildBr(builder, entry);
         Ok(function)
     }
 }
 
-pub(crate) fn run(module: &Module<'_>, entry: &str, shim: bool) -> Result<(), String> {
+pub(crate) fn run(module: &Module<'_>, entry: &str) -> Result<(), String> {
     let entry = std::ffi::CString::new(entry).map_err(|e| e.to_string())?;
     // SAFETY: a verified, exclusively owned module. Calls are collected per
     // caller before any is replaced, and a replaced call is erased only after
@@ -194,7 +174,7 @@ pub(crate) fn run(module: &Module<'_>, entry: &str, shim: bool) -> Result<(), St
             return Err("missing specialization entry".into());
         }
         let builder = LLVMCreateBuilderInContext(LLVMGetModuleContext(raw));
-        let result = specialize(raw, builder, root, shim);
+        let result = specialize(raw, builder, root);
         LLVMDisposeBuilder(builder);
         result
     }
@@ -204,7 +184,6 @@ unsafe fn specialize(
     module: LLVMModuleRef,
     builder: LLVMBuilderRef,
     root: LLVMValueRef,
-    shim: bool,
 ) -> Result<(), String> {
     unsafe {
         let mut cache: HashMap<(LLVMValueRef, Vec<u32>), LLVMValueRef> = HashMap::new();
@@ -272,7 +251,7 @@ unsafe fn specialize(
                         if cache.len() >= LIMIT {
                             return Err("retained helper specialization limit exceeded".into());
                         }
-                        let new = specialized(module, builder, callee, &arguments, &key.1, shim)?;
+                        let new = specialized(module, builder, callee, &arguments, &key.1)?;
                         cache.insert(key, new);
                         new
                     }

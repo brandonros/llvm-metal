@@ -1,15 +1,9 @@
 use std::{env, path::PathBuf, process::Command};
 fn main() {
-    let sources = [
-        "native/llvm_ext.cpp",
-        "native/calls.cpp",
-        "native/pointer_provenance.cpp",
-        "native/wide_integers.cpp",
-    ];
+    let sources = ["native/llvm_ext.cpp"];
     for source in sources {
         println!("cargo:rerun-if-changed={source}");
     }
-    println!("cargo:rerun-if-changed=native/pointer_provenance.h");
     println!("cargo:rerun-if-env-changed=LLVM_SYS_211_PREFIX");
     let config = env::var_os("LLVM_SYS_211_PREFIX")
         .map(|p| PathBuf::from(p).join("bin/llvm-config"))

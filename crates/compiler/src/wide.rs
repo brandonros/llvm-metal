@@ -19,24 +19,8 @@ use std::{
 };
 
 pub fn lower(module: &Module<'_>) -> Result<(), String> {
-    crate::parity::check("wide integers", module, reference, rust)?;
+    rust(module)?;
     module.verify().map_err(|e| e.to_string())
-}
-
-fn reference(module: &Module<'_>) -> Result<(), String> {
-    unsafe extern "C" {
-        fn LLVMMetalLowerWideIntegers(module: LLVMModuleRef) -> *mut std::ffi::c_char;
-    }
-    // SAFETY: caller owns the verified module; dispose the native diagnostic.
-    unsafe {
-        let error = LLVMMetalLowerWideIntegers(module.as_mut_ptr());
-        if !error.is_null() {
-            let text = CStr::from_ptr(error).to_string_lossy().into_owned();
-            LLVMDisposeMessage(error);
-            return Err(text);
-        }
-    }
-    Ok(())
 }
 
 fn rust(module: &Module<'_>) -> Result<(), String> {

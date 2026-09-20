@@ -140,7 +140,7 @@ fn nullable_pointer_loop(f: FunctionValue<'_>) -> bool {
         return false;
     }
     // SAFETY: read-only analysis of a verified live function.
-    let found = unsafe {
+    unsafe {
         let loops = crate::loops::Loops::of(f.as_value_ref());
         let pointer_phi = |header| {
             let mut phi = LLVMGetFirstInstruction(header);
@@ -165,18 +165,7 @@ fn nullable_pointer_loop(f: FunctionValue<'_>) -> bool {
                     .headers_containing(block.as_mut_ptr())
                     .any(pointer_phi)
         })
-    };
-    if crate::parity::enabled() {
-        unsafe extern "C" {
-            fn LLVMMetalHasNullablePointerLoop(
-                function: inkwell::llvm_sys::prelude::LLVMValueRef,
-            ) -> u32;
-        }
-        // SAFETY: read-only analysis of a verified live function.
-        let reference = unsafe { LLVMMetalHasNullablePointerLoop(f.as_value_ref()) != 0 };
-        assert_eq!(reference, found, "nullable pointer loop parity");
     }
-    found
 }
 
 pub(crate) fn retained(
@@ -291,12 +280,7 @@ fn select(
 }
 
 pub(crate) fn specialize(module: &Module<'_>, entry: &str) -> Result<(), String> {
-    crate::parity::check(
-        "function clone",
-        module,
-        |module| crate::specialize::run(module, entry, true),
-        |module| crate::specialize::run(module, entry, false),
-    )?;
+    crate::specialize::run(module, entry)?;
     module.verify().map_err(|e| e.to_string())
 }
 

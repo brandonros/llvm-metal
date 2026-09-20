@@ -68,6 +68,10 @@ unsafe fn copy_function_properties(
         if !gc.is_null() {
             LLVMSetGC(to, gc);
         }
+        // Instruction metadata is shared with the original, including distinct
+        // nodes such as the inliner's alias scopes: the C API cannot create a
+        // distinct node. Those scopes only relate accesses within one function
+        // and AIR legalization strips them after specialization.
         // A subprogram may describe one function only and the C API cannot clone
         // one, so the copy carries no debug info. Other attachments are shared.
         let debug = LLVMGetMDKindID(c"dbg".as_ptr(), 3);

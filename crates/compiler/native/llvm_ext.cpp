@@ -6,7 +6,6 @@
 #include <llvm/IR/Module.h>
 #include <llvm/Passes/PassBuilder.h>
 #include <llvm/Transforms/Scalar/InferAddressSpaces.h>
-#include <llvm/Transforms/Utils/Cloning.h>
 
 // Gap: the textual pipeline's infer-address-spaces takes no flat-address-space
 // parameter and AIR has no TargetMachine to supply one. Remove when LLVM's C API
@@ -40,18 +39,4 @@ extern "C" void LLVMExtRemoveModuleFlag(LLVMModuleRef module, const char *key, s
     }
     flags->clearOperands();
     for (auto *node : retained) flags->addOperand(node);
-}
-
-// Gap: no C API clones a function body into a function with another signature.
-// Temporary: remove when the Rust cloner in src/calls.rs replaces it.
-extern "C" LLVMBasicBlockRef LLVMExtCloneFunctionInto(LLVMValueRef to, LLVMValueRef from,
-                                                     LLVMValueRef *keys, LLVMValueRef *mapped,
-                                                     unsigned count) {
-    auto *source = llvm::cast<llvm::Function>(llvm::unwrap(from));
-    llvm::ValueToValueMapTy values;
-    for (unsigned i = 0; i < count; ++i) values[llvm::unwrap(keys[i])] = llvm::unwrap(mapped[i]);
-    llvm::SmallVector<llvm::ReturnInst *, 8> returns;
-    llvm::CloneFunctionInto(llvm::cast<llvm::Function>(llvm::unwrap(to)), source, values,
-                            llvm::CloneFunctionChangeType::LocalChangesOnly, returns);
-    return llvm::wrap(llvm::cast<llvm::BasicBlock>(values[&source->getEntryBlock()]));
 }

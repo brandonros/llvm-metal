@@ -205,16 +205,6 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                 let private_volatile_memory = unsafe {
                     crate::pointer_provenance::private_memory(instruction.as_value_ref())
                 };
-                if crate::parity::enabled() {
-                    unsafe extern "C" {
-                        fn LLVMMetalPrivateMemory(
-                            value: inkwell::llvm_sys::prelude::LLVMValueRef,
-                        ) -> bool;
-                    }
-                    // SAFETY: the native query only inspects this live instruction.
-                    let reference = unsafe { LLVMMetalPrivateMemory(instruction.as_value_ref()) };
-                    assert_eq!(reference, private_volatile_memory, "provenance parity");
-                }
                 if (instruction.get_opcode() == Load || instruction.get_opcode() == Store)
                     && ((instruction.get_volatile().unwrap_or(false) && !private_volatile_memory)
                         || instruction
