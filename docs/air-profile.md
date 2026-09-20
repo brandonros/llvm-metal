@@ -138,6 +138,9 @@ value and wider signed boundaries; poison cases are checked structurally.
 
 Scalar i8/i16/i32/i64 `smin`, `smax`, `umin` and `umax` lower to comparisons
 with the corresponding signedness and selection. Vector/wide inputs are rejected.
+Scalar i8/i16/i32/i64 `uadd.sat` and `usub.sat`, which stock Rust emits for
+saturating arithmetic and iterator adapters such as `take`, lower to a compare
+and select. Signed saturating forms and vector/wide inputs are rejected.
 `freeze` is preserved through LLVM 14 bitcode serialization and accepted by the
 tested Apple pipeline; it is not replaced by its possibly poison operand.
 `llvm.assume` is discarded as an optimization hint after legalization.

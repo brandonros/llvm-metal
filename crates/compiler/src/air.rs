@@ -142,6 +142,8 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                     "llvm.umax.",
                     "llvm.smin.",
                     "llvm.smax.",
+                    "llvm.uadd.sat.",
+                    "llvm.usub.sat.",
                     "llvm.lifetime.start",
                     "llvm.lifetime.end",
                     "llvm.memcpy.",
@@ -240,6 +242,19 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                             )
                         {
                             return Err("integer min/max requires a scalar i8/i16/i32/i64".into());
+                        }
+                    }
+                    if name.starts_with("llvm.uadd.sat.") || name.starts_with("llvm.usub.sat.") {
+                        let value = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
+                        if !value.is_int_value()
+                            || !matches!(
+                                value.into_int_value().get_type().get_bit_width(),
+                                8 | 16 | 32 | 64
+                            )
+                        {
+                            return Err(
+                                "saturating arithmetic requires a scalar i8/i16/i32/i64".into()
+                            );
                         }
                     }
                     if name.starts_with("llvm.ctlz.") || name.starts_with("llvm.cttz.") {
@@ -712,6 +727,66 @@ pub fn legalize_with_policy<'ctx>(
                         let value = builder
                             .build_select(condition, a, b, "minmax.value")
                             .map_err(|e| e.to_string())?;
+                        // SAFETY: scalar operands and replacement have the intrinsic's type.
+                        unsafe {
+                            inkwell::llvm_sys::core::LLVMReplaceAllUsesWith(
+                                instruction.as_value_ref(),
+                                value.as_value_ref(),
+                            );
+                        }
+                        instruction.erase_from_basic_block();
+                        continue;
+                    }
+                    // Stock Rust emits these for saturating_add/sub and for iterator
+                    // adapters such as take(). AIR has no saturating integer form.
+                    let saturating_add = name.starts_with("llvm.uadd.sat.");
+                    if saturating_add || name.starts_with("llvm.usub.sat.") {
+                        let a = instruction.get_operand(0).and_then(|o| o.value()).unwrap();
+                        let b = instruction.get_operand(1).and_then(|o| o.value()).unwrap();
+                        if !a.is_int_value() || !b.is_int_value() {
+                            return Err("vector saturating arithmetic is unsupported".into());
+                        }
+                        let (a, b) = (a.into_int_value(), b.into_int_value());
+                        builder.position_before(&instruction);
+                        let value = if saturating_add {
+                            // The wrapped sum is below an operand exactly on overflow.
+                            let sum = builder
+                                .build_int_add(a, b, "saturating.sum")
+                                .map_err(|e| e.to_string())?;
+                            let overflow = builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::ULT,
+                                    sum,
+                                    a,
+                                    "saturating.overflow",
+                                )
+                                .map_err(|e| e.to_string())?;
+                            builder.build_select(
+                                overflow,
+                                a.get_type().const_all_ones(),
+                                sum,
+                                "saturating.value",
+                            )
+                        } else {
+                            let difference = builder
+                                .build_int_sub(a, b, "saturating.difference")
+                                .map_err(|e| e.to_string())?;
+                            let above = builder
+                                .build_int_compare(
+                                    inkwell::IntPredicate::UGT,
+                                    a,
+                                    b,
+                                    "saturating.above",
+                                )
+                                .map_err(|e| e.to_string())?;
+                            builder.build_select(
+                                above,
+                                difference,
+                                a.get_type().const_zero(),
+                                "saturating.value",
+                            )
+                        }
+                        .map_err(|e| e.to_string())?;
                         // SAFETY: scalar operands and replacement have the intrinsic's type.
                         unsafe {
                             inkwell::llvm_sys::core::LLVMReplaceAllUsesWith(
