@@ -372,6 +372,14 @@ pub(crate) fn strip_modern_parameter_facts(module: &Module<'_>) {
     .filter(|id| *id != 0)
     .collect();
     for f in module.get_functions() {
+        // Size attributes have done their work in LLVM. Kernels that carry them
+        // to Apple's compiler return wrong answers on the GPU (M5, macOS 27).
+        for name in ["optsize", "minsize"] {
+            f.remove_enum_attribute(
+                AttributeLoc::Function,
+                Attribute::get_named_enum_kind_id(name),
+            );
+        }
         for loc in std::iter::once(AttributeLoc::Return)
             .chain((0..f.count_params()).map(AttributeLoc::Param))
         {
