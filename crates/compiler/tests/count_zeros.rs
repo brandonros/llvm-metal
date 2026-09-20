@@ -51,17 +51,14 @@ fn zero_count_types_and_poison_contract() {
                 assert_eq!(ir.contains("poison"), poison);
             }
         }
+        // Vector lanes are scalarized into per-lane operations AIR can lower.
         let vector = source(32, op, false)
             .replace(&format!("llvm.{op}.i32"), &format!("llvm.{op}.v2i32"))
             .replace("i32", "<2 x i32>")
             .replace("v2<2 x i32>", "v2i32");
-        assert!(
-            legalize(
-                &parse_ir(&context, vector.as_bytes(), op).unwrap(),
-                &interface()
-            )
-            .is_err()
-        );
+        let module = parse_ir(&context, vector.as_bytes(), op).unwrap();
+        let (air, _) = legalize(&module, &interface()).unwrap();
+        assert!(!air.print_to_string().to_string().contains(&format!("llvm.{op}")));
     }
 }
 #[cfg(target_os = "macos")]

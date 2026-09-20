@@ -54,18 +54,22 @@ fn absolute_value_preserves_minimum_integer_semantics_and_input() {
 #[test]
 fn unsupported_absolute_value_types_are_rejected_without_mutating_input() {
     let context = Context::create();
-    for text in [
-        source(128, false),
-        source(32, false)
-            .replace("llvm.abs.i32", "llvm.abs.v2i32")
-            .replace("i32", "<2 x i32>")
-            .replace("llvm.abs.v2<2 x i32>", "llvm.abs.v2i32"),
-    ] {
-        let module = parse_ir(&context, text.as_bytes(), "unsupported abs").unwrap();
-        let original = module.print_to_string().to_string();
-        assert!(legalize(&module, &interface()).is_err());
-        assert_eq!(module.print_to_string().to_string(), original);
-    }
+    let module = parse_ir(&context, source(128, false).as_bytes(), "unsupported abs").unwrap();
+    let original = module.print_to_string().to_string();
+    assert!(legalize(&module, &interface()).is_err());
+    assert_eq!(module.print_to_string().to_string(), original);
+    // Vector lanes are scalarized into per-lane operations AIR can lower.
+    let vector = source(32, false)
+        .replace("llvm.abs.i32", "llvm.abs.v2i32")
+        .replace("i32", "<2 x i32>")
+        .replace("llvm.abs.v2<2 x i32>", "llvm.abs.v2i32");
+    let module = parse_ir(&context, vector.as_bytes(), "vector abs").unwrap();
+    let original = module.print_to_string().to_string();
+    let (air, _) = legalize(&module, &interface()).unwrap();
+    let ir = air.print_to_string().to_string();
+    assert!(!ir.contains("llvm.abs"));
+    assert!(ir.contains("icmp slt"));
+    assert_eq!(module.print_to_string().to_string(), original);
 }
 
 #[cfg(target_os = "macos")]

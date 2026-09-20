@@ -62,18 +62,20 @@ fn integer_minmax_preserves_signedness_and_input() {
 fn unsupported_minmax_types_are_rejected_without_mutation() {
     let context = Context::create();
     for op in ["umin", "umax", "smin", "smax"] {
-        for source in [
-            source(128, op),
-            source(32, op)
-                .replace(&format!("llvm.{op}.i32"), &format!("llvm.{op}.v2i32"))
-                .replace("i32", "<2 x i32>")
-                .replace("v2<2 x i32>", "v2i32"),
-        ] {
-            let module = parse_ir(&context, source.as_bytes(), op).unwrap();
-            let original = module.print_to_string().to_string();
-            assert!(legalize(&module, &interface()).is_err());
-            assert_eq!(module.print_to_string().to_string(), original);
-        }
+        let module = parse_ir(&context, source(128, op).as_bytes(), op).unwrap();
+        let original = module.print_to_string().to_string();
+        assert!(legalize(&module, &interface()).is_err());
+        assert_eq!(module.print_to_string().to_string(), original);
+        // Vector lanes are scalarized into per-lane operations AIR can lower.
+        let vector = source(32, op)
+            .replace(&format!("llvm.{op}.i32"), &format!("llvm.{op}.v2i32"))
+            .replace("i32", "<2 x i32>")
+            .replace("v2<2 x i32>", "v2i32");
+        let module = parse_ir(&context, vector.as_bytes(), op).unwrap();
+        let original = module.print_to_string().to_string();
+        let (air, _) = legalize(&module, &interface()).unwrap();
+        assert!(!air.print_to_string().to_string().contains(&format!("llvm.{op}")));
+        assert_eq!(module.print_to_string().to_string(), original);
     }
 }
 #[cfg(target_os = "macos")]

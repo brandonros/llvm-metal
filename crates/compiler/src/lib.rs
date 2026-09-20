@@ -82,11 +82,14 @@ pub mod compile;
 pub mod descriptor;
 mod wide;
 
+mod icount;
 mod libcalls;
 
 mod wide_helpers;
 
 mod odd;
+
+mod vreduce;
 
 mod memory;
 

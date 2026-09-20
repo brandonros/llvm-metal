@@ -66,6 +66,19 @@ fn validate_calls(module: &Module<'_>, final_input: bool) -> Result<(), String> 
                 if call.get_call_convention() != callee.get_call_conventions() {
                     return Err("helper call-site calling convention mismatch".into());
                 }
+                // Only AIR-supported externals may remain declarations: Metal
+                // builtins are rewritten later and memcmp/bcmp are lowered.
+                if final_input && callee.count_basic_blocks() == 0 {
+                    let name = callee.get_name().to_string_lossy();
+                    if callee.get_intrinsic_id() == 0
+                        && !name.starts_with("llvm_metal.")
+                        && !matches!(&*name, "memcmp" | "bcmp")
+                    {
+                        return Err(format!(
+                            "unsupported runtime call survived inlining: {name}"
+                        ));
+                    }
+                }
             }
         }
     }
@@ -140,6 +153,133 @@ fn nullable_pointer_loop(f: FunctionValue<'_>) -> bool {
     unsafe { LLVMMetalHasNullablePointerLoop(f.as_value_ref()) != 0 }
 }
 
+/// Patterns that cannot cross a retained call boundary. Owning functions must
+/// inline so their callers' context can dissolve them during optimization.
+fn seed_reason(f: FunctionValue<'_>, name: &str) -> Option<&'static str> {
+    if f.count_basic_blocks() == 0
+        && f.get_intrinsic_id() == 0
+        && !matches!(name, "llvm_metal.atomic_add_device_u32" | "memcmp" | "bcmp")
+    {
+        return Some("unsupported_external");
+    }
+    let indirect = f
+        .get_basic_blocks()
+        .iter()
+        .flat_map(|b| b.get_instructions())
+        .filter_map(|i| CallSiteValue::try_from(i).ok())
+        .any(|call| call.get_called_fn_value().is_none());
+    if indirect {
+        return Some("indirect_call");
+    }
+    // Generic pointers carried through memory require inlining/SROA.
+    // Pointer-parameter specialization alone cannot retag a struct's
+    // stored pointer fields without changing its memory contract.
+    let pointer_memory = f
+        .get_basic_blocks()
+        .iter()
+        .flat_map(|b| b.get_instructions())
+        .any(|i| {
+            use inkwell::values::InstructionOpcode;
+            match i.get_opcode() {
+                InstructionOpcode::Load => i.get_type().is_pointer_type(),
+                InstructionOpcode::Store => unsafe {
+                    use inkwell::llvm_sys::{LLVMTypeKind, core::*};
+                    LLVMGetTypeKind(LLVMTypeOf(LLVMGetOperand(i.as_value_ref(), 0)))
+                        == LLVMTypeKind::LLVMPointerTypeKind
+                },
+                _ => false,
+            }
+        });
+    pointer_memory.then_some("pointer_memory")
+}
+
+fn required_reasons(
+    module: &Module<'_>,
+    propagate: bool,
+    report: bool,
+) -> std::collections::HashMap<String, &'static str> {
+    // Propagate required inlining to callers: thread-index use needs the entry,
+    // and unsupported runtime paths need caller facts before LLVM can eliminate
+    // them.
+    let mut map = std::collections::HashMap::from([(
+        "llvm_metal.linear_thread_index".to_owned(),
+        "thread_index",
+    )]);
+    for f in module.get_functions() {
+        let name = f.get_name().to_string_lossy().into_owned();
+        if let Some(reason) = seed_reason(f, &name) {
+            if report {
+                eprintln!(
+                    "[retain-report] stage=seed fn={name} instr={} verdict=seed reason={reason}",
+                    f.get_basic_blocks()
+                        .iter()
+                        .map(|b| b.get_instructions().count())
+                        .sum::<usize>(),
+                );
+            }
+            map.insert(name, reason);
+        }
+    }
+    if propagate {
+        loop {
+            let before = map.len();
+            for f in module.get_functions() {
+                let name = f.get_name().to_string_lossy().into_owned();
+                if map.contains_key(&name) {
+                    continue;
+                }
+                if f.get_basic_blocks()
+                    .iter()
+                    .flat_map(|b| b.get_instructions())
+                    .any(|i| {
+                        CallSiteValue::try_from(i)
+                            .ok()
+                            .and_then(|c| c.get_called_fn_value())
+                            .is_some_and(|c| {
+                                map.contains_key(&c.get_name().to_string_lossy().into_owned())
+                            })
+                    })
+                {
+                    map.insert(name, "calls_required");
+                }
+            }
+            if map.len() == before {
+                break;
+            }
+        }
+    }
+    map
+}
+
+/// Functions that must still inline at final legalization: they own an
+/// unsupported pattern or call a function that does. Retained helpers carrying
+/// one of these names need another inlining round.
+pub(crate) fn required(module: &Module<'_>) -> HashSet<String> {
+    required_reasons(module, true, false).into_keys().collect()
+}
+
+/// A defined non-terminal function still carries a call only caller context
+/// can dissolve: a required callee, or an indirect call that inlining may
+/// resolve. Calls already in terminal functions are final — intrinsics are
+/// rewritten later and anything else is rejected by final validation.
+pub(crate) fn unresolved_calls(module: &Module<'_>, terminal: &[&str]) -> bool {
+    let required = required(module);
+    module.get_functions().any(|f| {
+        f.count_basic_blocks() != 0
+            && !terminal.contains(&f.get_name().to_string_lossy().as_ref())
+            && f
+                .get_basic_blocks()
+                .iter()
+                .flat_map(|b| b.get_instructions())
+                .filter_map(|i| CallSiteValue::try_from(i).ok())
+                .any(|call| {
+                    call.get_called_fn_value().is_none_or(|c| {
+                        required.contains(&c.get_name().to_string_lossy().into_owned())
+                    })
+                })
+    })
+}
+
 pub(crate) fn retained(
     module: &Module<'_>,
     entry: &str,
@@ -156,7 +296,9 @@ fn select(
     if policy == InliningPolicy::All {
         return Ok(HashSet::new());
     }
-    validate_calls(module, final_input)?;
+    // Soft validation only: patterns that forced inlining can still repair are
+    // seeds, not errors. Strict final validation runs after legalization.
+    validate_calls(module, false)?;
     // Measurement hooks: LLVM_METAL_RETAIN_REPORT prints one verdict line per
     // defined function; LLVM_METAL_RETAIN_RELAX=<comma reasons> keeps matching
     // exclusions retainable so their AIR cost can be measured. Neither changes
@@ -165,93 +307,12 @@ fn select(
     let relaxed: Vec<String> = std::env::var("LLVM_METAL_RETAIN_RELAX")
         .map(|v| v.split(',').map(|s| s.trim().to_owned()).collect())
         .unwrap_or_default();
-    // Propagate required inlining to callers: thread-index use needs the entry,
-    // and unsupported runtime paths need caller facts before LLVM can eliminate
-    // them. Never assume a panic guard is false or erase a runtime call ourselves.
-    let mut required_reason: std::collections::HashMap<String, &'static str> =
-        std::collections::HashMap::from([("llvm_metal.linear_thread_index".to_owned(), "thread_index")]);
-    if !final_input {
-        for f in module.get_functions() {
-            let name = f.get_name().to_string_lossy().into_owned();
-            let unsupported_external = f.count_basic_blocks() == 0
-                && f.get_intrinsic_id() == 0
-                && !matches!(
-                    name.as_str(),
-                    "llvm_metal.atomic_add_device_u32" | "memcmp" | "bcmp"
-                );
-            let indirect = f
-                .get_basic_blocks()
-                .iter()
-                .flat_map(|b| b.get_instructions())
-                .filter_map(|i| CallSiteValue::try_from(i).ok())
-                .any(|call| call.get_called_fn_value().is_none());
-            // Generic pointers carried through memory require inlining/SROA.
-            // Pointer-parameter specialization alone cannot retag a struct's
-            // stored pointer fields without changing its memory contract.
-            let pointer_memory = f
-                .get_basic_blocks()
-                .iter()
-                .flat_map(|b| b.get_instructions())
-                .any(|i| {
-                    use inkwell::values::InstructionOpcode;
-                    match i.get_opcode() {
-                        InstructionOpcode::Load => i.get_type().is_pointer_type(),
-                        InstructionOpcode::Store => unsafe {
-                            use inkwell::llvm_sys::{LLVMTypeKind, core::*};
-                            LLVMGetTypeKind(LLVMTypeOf(LLVMGetOperand(i.as_value_ref(), 0)))
-                                == LLVMTypeKind::LLVMPointerTypeKind
-                        },
-                        _ => false,
-                    }
-                });
-            let reason = if unsupported_external {
-                "unsupported_external"
-            } else if indirect {
-                "indirect_call"
-            } else if pointer_memory {
-                "pointer_memory"
-            } else {
-                continue;
-            };
-            if report {
-                eprintln!(
-                    "[retain-report] stage=prepare fn={name} instr={} verdict=seed reason={reason}",
-                    f.get_basic_blocks()
-                        .iter()
-                        .map(|b| b.get_instructions().count())
-                        .sum::<usize>(),
-                );
-            }
-            required_reason.insert(name, reason);
-        }
-    }
-    loop {
-        let before = required_reason.len();
-        for f in module.get_functions() {
-            let name = f.get_name().to_string_lossy().into_owned();
-            if required_reason.contains_key(&name) {
-                continue;
-            }
-            if f.get_basic_blocks()
-                .iter()
-                .flat_map(|b| b.get_instructions())
-                .any(|i| {
-                    CallSiteValue::try_from(i)
-                        .ok()
-                        .and_then(|c| c.get_called_fn_value())
-                        .is_some_and(|c| {
-                            required_reason
-                                .contains_key(&c.get_name().to_string_lossy().into_owned())
-                        })
-                })
-            {
-                required_reason.insert(name, "calls_required");
-            }
-        }
-        if required_reason.len() == before {
-            break;
-        }
-    }
+    // Preparation forces only the pattern owners inline so optimization can
+    // expose their callers' context. Final legalization also propagates to any
+    // caller still carrying the pattern; the legalization loop re-runs until
+    // no retained helper needs inlining. Never assume a panic guard is false
+    // or erase a runtime call ourselves.
+    let required_reason = required_reasons(module, final_input, report);
     let disqualify = |f: FunctionValue<'_>| -> Option<String> {
         let name = f.get_name().to_string_lossy().into_owned();
         let mut relaxed_reason = None;
@@ -369,51 +430,73 @@ pub fn prepare<'ctx>(
     // callbacks on panic paths. Let LLVM remove unreachable paths; never retain
     // recursive or escaping boundaries. Final legalization still rejects any
     // surviving recursion, function addresses, or indirect calls.
-    let names = select(&module, entry, policy, false)?;
-    let context = module.get_context();
-    for function in module
-        .get_functions()
-        .filter(|f| f.count_basic_blocks() != 0)
-    {
-        let keep = names.contains(&function.get_name().to_string_lossy().into_owned());
-        for name in ["alwaysinline", "noinline", "optnone"] {
-            function.remove_enum_attribute(
-                AttributeLoc::Function,
-                Attribute::get_named_enum_kind_id(name),
-            );
-        }
-        // The selected entry remains externally visible to the upstream optimizer.
-        if function.get_name().to_bytes() != entry.as_bytes() {
-            function.add_attribute(
-                AttributeLoc::Function,
-                context.create_enum_attribute(
-                    Attribute::get_named_enum_kind_id(if keep {
-                        "noinline"
-                    } else {
-                        "alwaysinline"
-                    }),
-                    0,
-                ),
-            );
-        }
-        for i in function
-            .get_basic_blocks()
-            .iter()
-            .flat_map(|b| b.get_instructions())
+    // Each round marks retention, optimizes, then re-inspects: a caller whose
+    // own context could not dissolve an unsupported pattern is inlined next
+    // round, so only genuinely dirty call chains pay for boundary removal.
+    const PREPARATION_PASSES: usize = 8;
+    for attempt in 0..PREPARATION_PASSES {
+        let names = select(&module, entry, policy, attempt != 0)?;
+        let context = module.get_context();
+        for function in module
+            .get_functions()
+            .filter(|f| f.count_basic_blocks() != 0)
         {
-            if let Ok(call) = CallSiteValue::try_from(i) {
-                if call
-                    .get_called_fn_value()
-                    .is_some_and(|f| f.count_basic_blocks() != 0)
-                {
-                    for name in ["alwaysinline", "noinline"] {
-                        call.remove_enum_attribute(
-                            AttributeLoc::Function,
-                            Attribute::get_named_enum_kind_id(name),
-                        );
+            let keep = names.contains(&function.get_name().to_string_lossy().into_owned());
+            for name in ["alwaysinline", "noinline", "optnone"] {
+                function.remove_enum_attribute(
+                    AttributeLoc::Function,
+                    Attribute::get_named_enum_kind_id(name),
+                );
+            }
+            // The selected entry remains externally visible to the upstream optimizer.
+            if function.get_name().to_bytes() != entry.as_bytes() {
+                function.add_attribute(
+                    AttributeLoc::Function,
+                    context.create_enum_attribute(
+                        Attribute::get_named_enum_kind_id(if keep {
+                            "noinline"
+                        } else {
+                            "alwaysinline"
+                        }),
+                        0,
+                    ),
+                );
+            }
+            for i in function
+                .get_basic_blocks()
+                .iter()
+                .flat_map(|b| b.get_instructions())
+            {
+                if let Ok(call) = CallSiteValue::try_from(i) {
+                    if call
+                        .get_called_fn_value()
+                        .is_some_and(|f| f.count_basic_blocks() != 0)
+                    {
+                        for name in ["alwaysinline", "noinline"] {
+                            call.remove_enum_attribute(
+                                AttributeLoc::Function,
+                                Attribute::get_named_enum_kind_id(name),
+                            );
+                        }
                     }
                 }
             }
+        }
+        // Match the consumer's always-inline + O3 stage so callers carrying an
+        // undissolved pattern are visible before their inlining is decided.
+        crate::air::passes(&module, "always-inline,default<O3>")?;
+        // Optimizers can form vector reductions scalarizer regathers around;
+        // expand them first so scalar lanes fold away with the vector.
+        crate::vreduce::lower(&module)?;
+        crate::air::passes(
+            &module,
+            "function(instcombine,scalarizer<load-store>),globaldce,strip-dead-prototypes",
+        )?;
+        if !unresolved_calls(&module, &[entry]) {
+            break;
+        }
+        if attempt + 1 == PREPARATION_PASSES {
+            return Err("unsupported calls survived preparation inlining".into());
         }
     }
     module.verify().map_err(|e| e.to_string())?;
@@ -503,8 +586,10 @@ mod tests {
         validate(&prepared).unwrap();
         assert!(prepared.get_function("compute").is_some());
         assert!(prepared.get_function("read_record").is_none());
-        assert!(prepared.get_function("wrap").is_none());
-        assert!(!prepared.print_to_string().to_string().contains("load ptr"));
+        // The caller stays a retention candidate through optimization and comes
+        // out clean once the pointer field dissolves inside it.
+        assert!(prepared.get_function("wrap").is_some());
+        assert!(!required(&prepared).contains("wrap"));
     }
 
     #[test]
@@ -553,6 +638,8 @@ mod tests {
         crate::air::passes(&prepared, "always-inline,default<O3>,globaldce").unwrap();
         validate(&prepared).unwrap();
         assert!(prepared.get_function("compute").is_some());
+        // checked owns the callback pointer store, so it inlines itself; the
+        // kernel's constant state then kills the dead runtime path.
         for name in ["report", "callback", "initialize", "checked"] {
             assert!(prepared.get_function(name).is_none(), "surviving {name}");
         }

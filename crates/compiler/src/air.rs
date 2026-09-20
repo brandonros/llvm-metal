@@ -338,10 +338,17 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
 // AIR has no upstream TargetMachine. LLVM supports null for these generic passes.
 pub(crate) fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> {
     use inkwell::llvm_sys::{error::*, transforms::pass_builder::*};
+    let trace = std::env::var_os("LLVM_METAL_TRACE").is_some();
     let pipeline = CString::new(pipeline).unwrap();
     // SAFETY: module/pipeline remain live; options and error messages are disposed.
     unsafe {
         let options = LLVMCreatePassBuilderOptions();
+        // Match the consumer's opt flags: vector widths are unsupported AIR input.
+        LLVMPassBuilderOptionsSetLoopVectorization(options, 0);
+        LLVMPassBuilderOptionsSetSLPVectorization(options, 0);
+        if trace {
+            eprintln!("[trace] passes start: {}", pipeline.to_string_lossy());
+        }
         let error = LLVMRunPasses(
             module.as_mut_ptr(),
             pipeline.as_ptr(),
@@ -349,6 +356,9 @@ pub(crate) fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> 
             options,
         );
         LLVMDisposePassBuilderOptions(options);
+        if trace {
+            eprintln!("[trace] passes done: {}", pipeline.to_string_lossy());
+        }
         if error.is_null() {
             return Ok(());
         }
@@ -387,16 +397,47 @@ pub fn legalize_with_policy<'ctx>(
     unsafe extern "C" {
         fn LLVMMetalExpandPrivateVolatileCopies(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
     }
+    let trace = std::env::var_os("LLVM_METAL_TRACE").is_some();
     // SAFETY: verified disposable clone, bounded private copies only.
     unsafe {
         LLVMMetalExpandPrivateVolatileCopies(module.as_mut_ptr());
     }
+    if trace {
+        eprintln!("[trace] volatile copies done");
+    }
     crate::libcalls::lower(&module)?;
+    if trace {
+        eprintln!("[trace] libcalls done");
+    }
+    // Optimizers can form vector operations AIR cannot lower; expand them
+    // before wide-integer splitting sees vector element types.
+    if std::env::var_os("LLVM_METAL_SKIP_VREDUCE").is_none() {
+        crate::vreduce::lower(&module)?;
+    }
+    crate::icount::lower(&module)?;
+    if trace {
+        eprintln!("[trace] vreduce done");
+        module.write_bitcode_to_path(std::path::Path::new("/tmp/pre-scalarizer.bc"));
+    }
+    let scal_pipeline = std::env::var("LLVM_METAL_SCAL_PIPELINE")
+        .unwrap_or_else(|_| "function(instcombine,scalarizer<load-store>)".into());
+    passes(&module, &scal_pipeline)?;
     crate::wide_helpers::lower(&module)?;
+    if trace {
+        eprintln!("[trace] wide helpers done");
+    }
     crate::wide::lower(&module)?;
+    if trace {
+        eprintln!("[trace] wide done");
+    }
+    // InstCombine refolds expanded popcount chains; expand the intrinsic
+    // form after the last InstCombine, before odd-width validation.
+    crate::icount::lower(&module)?;
     crate::odd::lower(&module)?;
+    if trace {
+        eprintln!("[trace] odd done");
+    }
     validate_input(&module)?;
-    let retained = crate::calls::retained(&module, &interface.entry, policy)?;
     let context = module.get_context();
     let implementation = module
         .get_function(&interface.entry)
@@ -420,62 +461,6 @@ pub fn legalize_with_policy<'ctx>(
         return Err("reserved implementation name collision".into());
     }
     implementation.as_global_value().set_name(&internal_name);
-    for function in module
-        .get_functions()
-        .filter(|f| f.count_basic_blocks() != 0)
-    {
-        function.set_linkage(Linkage::Internal);
-        function.remove_string_attribute(AttributeLoc::Function, "target-cpu");
-        function.remove_string_attribute(AttributeLoc::Function, "target-features");
-        function.remove_string_attribute(AttributeLoc::Function, "llvm-metal.retained");
-        let keep = retained.contains(&function.get_name().to_string_lossy().into_owned());
-        for name in ["alwaysinline", "noinline", "optnone"] {
-            function.remove_enum_attribute(
-                AttributeLoc::Function,
-                Attribute::get_named_enum_kind_id(name),
-            );
-        }
-        if keep {
-            // Internal fastcc has no external ABI. All direct call sites below
-            // are retargeted together to the supported AIR C convention.
-            function.set_call_conventions(0);
-            function.add_attribute(
-                AttributeLoc::Function,
-                context.create_string_attribute("llvm-metal.retained", ""),
-            );
-        }
-        function.add_attribute(
-            AttributeLoc::Function,
-            context.create_enum_attribute(
-                Attribute::get_named_enum_kind_id(if keep { "noinline" } else { "alwaysinline" }),
-                0,
-            ),
-        );
-        // Rust can also attach noinline to individual calls (e.g. subtle's
-        // volatile barrier). Inlining preserves the volatile access itself.
-        for block in function.get_basic_blocks() {
-            for instruction in block.get_instructions() {
-                if let Ok(call) = inkwell::values::CallSiteValue::try_from(instruction) {
-                    if call
-                        .get_called_fn_value()
-                        .is_some_and(|f| f.count_basic_blocks() != 0)
-                    {
-                        if call.get_called_fn_value().is_some_and(|callee| {
-                            retained.contains(&callee.get_name().to_string_lossy().into_owned())
-                        }) {
-                            call.set_call_convention(0);
-                        }
-                        for name in ["noinline", "alwaysinline"] {
-                            call.remove_enum_attribute(
-                                AttributeLoc::Function,
-                                Attribute::get_named_enum_kind_id(name),
-                            );
-                        }
-                    }
-                }
-            }
-        }
-    }
     let device_pointer = context.ptr_type(AddressSpace::from(1));
     let indexed = module
         .get_function("llvm_metal.linear_thread_index")
@@ -535,12 +520,98 @@ pub fn legalize_with_policy<'ctx>(
     }
     module.set_triple(&TargetTriple::create("air64-apple-macosx13.0.0"));
     module.set_data_layout(&TargetData::create(AIR_LAYOUT).get_data_layout());
-    // Expanded dalek scalar products need multiple InstCombine iterations.
-    // Keep fixpoint verification enabled rather than suppressing its assertion.
-    passes(
-        &module,
-        "always-inline,function(sroa,instcombine<verify-fixpoint;max-iterations=4>),globaldce",
-    )?;
+    // Each round inlines non-retained functions into their callers. A retained
+    // helper that still owns or calls an unsupported pattern is dropped back to
+    // inlining and the pipeline repeats, so only callers whose optimization
+    // could not dissolve the pattern pay for boundary removal.
+    const LEGALIZATION_PASSES: usize = 8;
+    for attempt in 0..LEGALIZATION_PASSES {
+        if trace {
+            eprintln!("[trace] legalize attempt {attempt}");
+        }
+        let retained = crate::calls::retained(&module, &interface.entry, policy)?;
+        for function in module
+            .get_functions()
+            .filter(|f| f.count_basic_blocks() != 0)
+        {
+            let fname = function.get_name().to_string_lossy().into_owned();
+            if fname == interface.entry {
+                continue;
+            }
+            function.set_linkage(Linkage::Internal);
+            function.remove_string_attribute(AttributeLoc::Function, "target-cpu");
+            function.remove_string_attribute(AttributeLoc::Function, "target-features");
+            function.remove_string_attribute(AttributeLoc::Function, "llvm-metal.retained");
+            let keep = fname != internal_name && retained.contains(&fname);
+            for name in ["alwaysinline", "noinline", "optnone"] {
+                function.remove_enum_attribute(
+                    AttributeLoc::Function,
+                    Attribute::get_named_enum_kind_id(name),
+                );
+            }
+            if keep {
+                // Internal fastcc has no external ABI. All direct call sites below
+                // are retargeted together to the supported AIR C convention.
+                function.set_call_conventions(0);
+                function.add_attribute(
+                    AttributeLoc::Function,
+                    context.create_string_attribute("llvm-metal.retained", ""),
+                );
+            }
+            function.add_attribute(
+                AttributeLoc::Function,
+                context.create_enum_attribute(
+                    Attribute::get_named_enum_kind_id(if keep { "noinline" } else { "alwaysinline" }),
+                    0,
+                ),
+            );
+            // Rust can also attach noinline to individual calls (e.g. subtle's
+            // volatile barrier). Inlining preserves the volatile access itself.
+            for block in function.get_basic_blocks() {
+                for instruction in block.get_instructions() {
+                    if let Ok(call) = inkwell::values::CallSiteValue::try_from(instruction) {
+                        if call
+                            .get_called_fn_value()
+                            .is_some_and(|f| f.count_basic_blocks() != 0)
+                        {
+                            if call.get_called_fn_value().is_some_and(|callee| {
+                                retained.contains(&callee.get_name().to_string_lossy().into_owned())
+                            }) {
+                                call.set_call_convention(0);
+                            }
+                            for name in ["noinline", "alwaysinline"] {
+                                call.remove_enum_attribute(
+                                    AttributeLoc::Function,
+                                    Attribute::get_named_enum_kind_id(name),
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // Expanded dalek scalar products need multiple InstCombine iterations.
+        // Keep fixpoint verification enabled rather than suppressing its assertion.
+        crate::vreduce::lower(&module)?;
+        crate::icount::lower(&module)?;
+        passes(
+            &module,
+            "always-inline,function(sroa,instcombine<verify-fixpoint;max-iterations=4>,scalarizer<load-store>),globaldce",
+        )?;
+        if !crate::calls::unresolved_calls(&module, &[&interface.entry, &internal_name]) {
+            break;
+        }
+        if attempt + 1 == LEGALIZATION_PASSES {
+            return Err("retained helpers still carry unsupported calls".into());
+        }
+    }
+    // Whatever inlining could not dissolve is rejected with its specific
+    // reason: recursion, escaping addresses, and surviving indirect calls.
+    if trace {
+        eprintln!("[trace] loop converged, validating");
+    }
+    crate::icount::lower(&module)?;
+    crate::calls::validate(&module)?;
     for block in module.get_functions().flat_map(|f| f.get_basic_blocks()) {
         let instructions: Vec<_> = block.get_instructions().collect();
         for instruction in instructions {
@@ -634,12 +705,21 @@ pub fn legalize_with_policy<'ctx>(
         LLVMMetalRemoveCodegenFlags(module.as_mut_ptr());
         LLVMMetalInferAddressSpaces(module.as_mut_ptr());
     }
+    if trace {
+        eprintln!("[trace] infer 1 done");
+    }
     if policy == InliningPolicy::Selective {
         crate::calls::specialize(&module, &interface.entry)?;
+        if trace {
+            eprintln!("[trace] specialize done");
+        }
         // Specialization introduces generic casts only within the cloned bodies.
         // Infer again with each formal parameter's actual Metal address space.
         unsafe {
             LLVMMetalInferAddressSpaces(module.as_mut_ptr());
+        }
+        if trace {
+            eprintln!("[trace] infer 2 done");
         }
     }
     passes(
