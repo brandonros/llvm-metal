@@ -90,6 +90,8 @@ mod wide_helpers;
 #[doc(hidden)]
 pub mod odd;
 
+mod clone;
+
 mod loops;
 
 mod memory;

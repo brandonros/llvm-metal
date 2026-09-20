@@ -91,8 +91,8 @@ impl Loops {
             // A back edge targets a block that dominates its source. Its loop is
             // every block that reaches the source without passing the header.
             let mut bodies: HashMap<usize, HashSet<usize>> = HashMap::new();
-            for source in 0..order.len() {
-                for successor in successors(order[source]) {
+            for (source, &block) in order.iter().enumerate() {
+                for successor in successors(block) {
                     let header = number[&successor];
                     if !dominates(header, source) {
                         continue;

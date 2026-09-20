@@ -291,7 +291,12 @@ fn select(
 }
 
 pub(crate) fn specialize(module: &Module<'_>, entry: &str) -> Result<(), String> {
-    crate::specialize::run(module, entry)?;
+    crate::parity::check(
+        "function clone",
+        module,
+        |module| crate::specialize::run(module, entry, true),
+        |module| crate::specialize::run(module, entry, false),
+    )?;
     module.verify().map_err(|e| e.to_string())
 }
 
