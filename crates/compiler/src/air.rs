@@ -332,6 +332,42 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
 }
 
 // AIR has no upstream TargetMachine. LLVM supports null for these generic passes.
+// Host position-independence flags do not apply to AIR, and Apple's pipeline
+// compiler fails on a kernel with retained helper functions that carries
+// "PIC Level" 2 (XPC_ERROR_CONNECTION_INTERRUPTED on Apple M5). LLVM's C API
+// cannot remove a module flag, but it can replace a flag's value: level 0 is
+// LLVM's "not PIC/PIE", the same meaning as an absent flag.
+fn neutralize_codegen_flags(module: &Module<'_>) {
+    use inkwell::llvm_sys::core::*;
+    let name = c"llvm.module.flags";
+    // SAFETY: verified live module with exclusive mutation. Each flag node has
+    // the verifier-checked shape {behavior, key string, value}.
+    unsafe {
+        let raw = module.as_mut_ptr();
+        let count = LLVMGetNamedMetadataNumOperands(raw, name.as_ptr());
+        let mut flags = vec![std::ptr::null_mut(); count as usize];
+        LLVMGetNamedMetadataOperands(raw, name.as_ptr(), flags.as_mut_ptr());
+        let context = LLVMGetModuleContext(raw);
+        for flag in flags {
+            if LLVMGetMDNodeNumOperands(flag) != 3 {
+                continue;
+            }
+            let mut operands = [std::ptr::null_mut(); 3];
+            LLVMGetMDNodeOperands(flag, operands.as_mut_ptr());
+            let mut length = 0;
+            let key = LLVMGetMDString(operands[1], &mut length);
+            if key.is_null() {
+                continue;
+            }
+            let key = std::slice::from_raw_parts(key.cast::<u8>(), length as usize);
+            if key == b"PIC Level" || key == b"PIE Level" {
+                let zero = LLVMConstInt(LLVMInt32TypeInContext(context), 0, 0);
+                LLVMReplaceMDNodeOperandWith(flag, 2, LLVMValueAsMetadata(zero));
+            }
+        }
+    }
+}
+
 pub(crate) fn passes(module: &Module<'_>, pipeline: &str) -> Result<(), String> {
     use inkwell::llvm_sys::{error::*, transforms::pass_builder::*};
     let pipeline = CString::new(pipeline).unwrap();
@@ -615,8 +651,7 @@ pub fn legalize_with_policy<'ctx>(
             }
         }
     }
-    // Source PIC/PIE module flags are left in place. LLVM's C API cannot remove
-    // a module flag, and Metal accepts AIR that carries them.
+    neutralize_codegen_flags(&module);
     crate::address_spaces::infer(&module);
     if policy == InliningPolicy::Selective {
         crate::calls::specialize(&module, &interface.entry)?;

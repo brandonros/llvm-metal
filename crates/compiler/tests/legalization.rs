@@ -87,7 +87,7 @@ fn rejects_wrong_target_layout_signature_and_invocation_contract() {
 }
 
 #[test]
-fn constant_tables_are_retargeted_and_codegen_flags_pass_through() {
+fn constant_tables_are_retargeted_and_codegen_flags_are_neutralized() {
     let context = Context::create();
     let text = source(
         "%i = load i32, ptr %p\n%j = and i32 %i, 3\n%q = getelementptr [4 x i32], ptr @table, i32 0, i32 %j\n%v = load i32, ptr %q\nstore i32 %v, ptr %p",
@@ -97,8 +97,9 @@ fn constant_tables_are_retargeted_and_codegen_flags_pass_through() {
     let ir = air.print_to_string().to_string();
     assert!(ir.contains("addrspace(2) constant"));
     assert!(!ir.contains("addrspacecast"));
-    // Host code-generation flags pass through; Metal accepts them.
-    assert!(ir.contains("PIC Level") && ir.contains("PIE Level"));
+    // Host position-independence levels are reset to LLVM's "not PIC/PIE".
+    assert!(ir.contains("!\"PIC Level\", i32 0") && ir.contains("!\"PIE Level\", i32 0"));
+    assert!(!ir.contains("Level\", i32 2"));
     let mutable = text.replace("@table = constant", "@table = global");
     assert!(
         legalize(
