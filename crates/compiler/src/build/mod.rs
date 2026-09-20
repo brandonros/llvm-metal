@@ -522,7 +522,6 @@ pub fn run(build: &Build) -> Result<Value, String> {
 
     // Entries are independent after linking; each is optimized in its own process.
     let next = AtomicUsize::new(0);
-    let failed = std::sync::atomic::AtomicBool::new(false);
     let results: Vec<std::sync::Mutex<Option<Result<Value, String>>>> =
         cases.iter().map(|_| Default::default()).collect();
     std::thread::scope(|scope| {
@@ -530,11 +529,10 @@ pub fn run(build: &Build) -> Result<Value, String> {
             scope.spawn(|| {
                 loop {
                     let index = next.fetch_add(1, Ordering::SeqCst);
-                    if index >= cases.len() || failed.load(Ordering::SeqCst) {
+                    if index >= cases.len() {
                         break;
                     }
                     let result = build_unit(build, &stripped_path, &directories[index]);
-                    failed.fetch_or(result.is_err(), Ordering::SeqCst);
                     *results[index].lock().unwrap() = Some(result);
                 }
             });
@@ -549,6 +547,8 @@ pub fn run(build: &Build) -> Result<Value, String> {
     });
     let (mut group_cases, mut frontend_total, mut lowering_total) =
         (Vec::new(), shared_frontend_seconds, 0.0);
+    // Every entry is attempted, so one build reports every refusal.
+    let mut refused = Vec::new();
     for ((case, directory), result) in cases.iter().zip(&directories).zip(results) {
         let destination = match (&case.name, grouped) {
             (Some(name), true) => build.output.join("cases").join(name),
@@ -567,9 +567,13 @@ pub fn run(build: &Build) -> Result<Value, String> {
                         let _ = fs::copy(entry.path(), destination.join(entry.file_name()));
                     }
                 }
-                return Err(format!("{}: {error}", case.entry));
+                refused.push(format!(
+                    "{}: {error}",
+                    case.name.as_deref().unwrap_or(&case.entry)
+                ));
+                continue;
             }
-            None => continue,
+            None => return Err("a worker finished without a result".into()),
         };
         if source_hashes != hashes(&files)? {
             return Err("source changed during the build; rerun for an attributable bundle".into());
@@ -623,8 +627,13 @@ pub fn run(build: &Build) -> Result<Value, String> {
         }
         fs::write(destination.join("kernel.build.json"), manifest).map_err(|e| e.to_string())?;
     }
-    if failed.load(Ordering::SeqCst) {
-        return Err("a worker failed without a result".into());
+    if !refused.is_empty() {
+        return Err(format!(
+            "{} of {} entries refused:\n{}",
+            refused.len(),
+            cases.len(),
+            refused.join("\n")
+        ));
     }
     if grouped {
         let mut timings = shared.clone();
