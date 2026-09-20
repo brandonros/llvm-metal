@@ -15,6 +15,38 @@
 - Keep small source fixtures in Git and generated artifacts under `target/`.
   Follow `tests/fixtures/README.md` when a regression needs captured IR or bitcode.
 
+## Working rules
+
+Each of these comes from a real mistake. #24 has the baselines to re-measure
+before and after a change.
+
+1. **One passing kernel proves nothing.** A change to what reaches Apple's
+   compiler is accepted only by vanity-miner's full run (`scripts/test-gpu.py
+   --suite all` with `VANITY_LLVM_METAL_SOURCE` set to this checkout: 203
+   self-test cases). Passing PIC/PIE flags through unchanged passed 212 tests and
+   one GPU kernel, then crashed Apple's pipeline compiler on two others.
+2. **Decide which layer is wrong before fixing it.** `urem i128` in a kernel was
+   a kernel bug, not a reason to add 128-bit division here. `llvm.usub.sat` from
+   an ordinary `.take(n)` was a compiler gap, not a reason to contort the kernel.
+3. **Identical text is not identical output.** `kernel.air.ll` can match while
+   `kernel.air.bc` and the metallib differ. Compare the bytes Metal loads.
+4. **Keep the old implementation selectable until the new one is proven.** Run
+   both on clones of one module and require the same printed IR, refusals and
+   predicate results. Compare clone with clone: cloning reorders use lists.
+5. **Measure before explaining.** Sample the process, check CPU per process,
+   read the recorded stage timings. Slow GPU tests were blamed on compiling; the
+   time was in Apple's `MTLCompilerService`.
+6. **Do not grow a pass one refused operation at a time.** If a workload needs a
+   new lowering, first ask whether the workload should avoid the construct, and
+   whether the pass is the right design at all (#18, #19).
+7. **Never weaken a safety or verification check to gain speed** without saying
+   so in the PR title and getting explicit agreement.
+8. **One GPU run at a time.** GPU and fixture tests share output directories;
+   concurrent runs corrupt each other. One issue, one branch, one PR.
+9. **Leave nothing uncommitted in a worktree, and say what you did not run.**
+   Park unfinished work on a pushed branch whose message states its condition.
+   Every PR lists which checks ran, on what hardware, and which were skipped.
+
 ## No native code
 
 - This repository has no C, C++ or Objective-C, no `build.rs`, and no `cc`,
@@ -44,10 +76,6 @@
   code is added only after that discussion, as one generic `LLVMExt*` function
   that wraps one LLVM utility, holds no Metal policy, and states in a comment
   which gap it covers and what would let it be deleted.
-- A single passing kernel does not prove a behaviour is safe to drop. Dropping
-  PIC/PIE flag handling passed one GPU test and then failed Apple's pipeline
-  compiler on two other kernels.
-
 ## Documentation
 
 - Keep `docs/air-profile.md` as the supported-profile reference and
