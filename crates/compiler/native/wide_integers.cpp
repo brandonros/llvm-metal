@@ -1,6 +1,7 @@
 // Scalar i128 arithmetic used by stock Rust/k256, expressed as (low, high) i64.
 // Deliberately not a general arbitrary-width legalizer: device wide loads, general calls,
-// division, vectors and ABI changes remain unsupported.
+// vectors and ABI changes remain unsupported. Division expands through LLVM's
+// same-width shift/subtract sequence before pair lowering.
 #include <llvm-c/Core.h>
 #include <llvm/ADT/DenseMap.h>
 #include <llvm/ADT/SmallPtrSet.h>
@@ -9,6 +10,7 @@
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/Module.h>
 #include <llvm/Support/raw_ostream.h>
+#include <llvm/Transforms/Utils/IntegerDivision.h>
 
 #include "pointer_provenance.h"
 
@@ -18,7 +20,16 @@ using Pair = std::pair<Value *, Value *>;
 struct Lower {
     DenseMap<Value *, Pair> values;
     SmallVector<Instruction *, 64> erased;
+    SmallPtrSet<Instruction *, 32> inErased;
     std::string error;
+
+    // A use-def cycle through more than one phi can re-enter get() for an
+    // instruction that is still being lowered. The re-entrant call produces
+    // an equivalent pair over the same phi placeholders, but the instruction
+    // must still be erased only once.
+    void mark(Instruction *i) {
+        if (inErased.insert(i).second) erased.push_back(i);
+    }
 
     Pair fail(Value *v) {
         if (error.empty()) {
@@ -85,9 +96,9 @@ struct Lower {
             }
             for (auto *extract : extracts) {
                 values[extract] = elements[extract->getIndices()[0]];
-                erased.push_back(extract);
+                mark(extract);
             }
-            erased.push_back(load);
+            mark(load);
         }
         return true;
     }
@@ -187,7 +198,7 @@ struct Lower {
             auto *hi = b.CreatePHI(ty, phi->getNumIncomingValues(), "wide.high");
             // Publish placeholders before following backedges in cyclic SSA.
             values[v] = {lo, hi};
-            erased.push_back(i);
+            mark(i);
             for (unsigned n = 0; n < phi->getNumIncomingValues(); ++n) {
                 auto incoming = get(phi->getIncomingValue(n));
                 if (!incoming.first) return {nullptr, nullptr};
@@ -208,12 +219,30 @@ struct Lower {
                 return fail(i);
             auto *lo = op == Instruction::ZExt ? b.CreateZExt(x, ty) : b.CreateSExt(x, ty);
             result = {lo, op == Instruction::ZExt ? zero : b.CreateAShr(lo, 63)};
+        } else if (op == Instruction::Freeze) {
+            // Freezing each half independently picks one fixed i128 value for a
+            // poison operand, which is exactly the freeze contract.
+            auto a = get(i->getOperand(0));
+            if (!a.first) return a;
+            result = {b.CreateFreeze(a.first), b.CreateFreeze(a.second)};
         } else if (auto *intrinsic = dyn_cast<IntrinsicInst>(i)) {
-            if (intrinsic->getIntrinsicID() != Intrinsic::bswap) return fail(i);
             auto a = get(intrinsic->getArgOperand(0));
             if (!a.first) return a;
-            result = {b.CreateUnaryIntrinsic(Intrinsic::bswap, a.second),
-                      b.CreateUnaryIntrinsic(Intrinsic::bswap, a.first)};
+            if (intrinsic->getIntrinsicID() == Intrinsic::bswap) {
+                result = {b.CreateUnaryIntrinsic(Intrinsic::bswap, a.second),
+                          b.CreateUnaryIntrinsic(Intrinsic::bswap, a.first)};
+            } else if (intrinsic->getIntrinsicID() == Intrinsic::ctlz) {
+                // clz128(a) = a.high == 0 ? 64 + clz64(a.low) : clz64(a.high).
+                // The 0..128 count always fits in the low half. The
+                // zero-poison flag keeps its meaning on both 64-bit counts:
+                // poison only escapes through the arm that is selected.
+                auto *flag = intrinsic->getArgOperand(1);
+                auto *clzLo = b.CreateIntrinsic(Intrinsic::ctlz, {ty}, {a.first, flag});
+                auto *clzHi = b.CreateIntrinsic(Intrinsic::ctlz, {ty}, {a.second, flag});
+                result = {b.CreateSelect(b.CreateICmpEQ(a.second, zero),
+                                         b.CreateAdd(clzLo, b.getInt64(64)), clzHi),
+                          zero};
+            } else return fail(i);
         } else if (op == Instruction::Select) {
             auto a = get(i->getOperand(1)), c = get(i->getOperand(2));
             if (!a.first || !c.first) return {nullptr, nullptr};
@@ -278,7 +307,7 @@ struct Lower {
                 // 128-bit count or create a shift-by-64 in an otherwise valid path.
                 result = {b.CreateSelect(valid, lo, PoisonValue::get(ty)), b.CreateSelect(valid, hi, PoisonValue::get(ty))};
                 values[v] = result;
-                erased.push_back(i);
+                mark(i);
                 return result;
             }
             if (count->getValue().uge(128)) return fail(i);
@@ -300,7 +329,7 @@ struct Lower {
         // Dropping no-wrap/exact flags is conservative: all defined inputs retain
         // their result; we do not invent a stronger poison/overflow contract.
         values[v] = result;
-        erased.push_back(i);
+        mark(i);
         return result;
     }
 
@@ -310,9 +339,45 @@ struct Lower {
             return false;
         }
         if (!normalizePrivateStorage(module) || !lowerArraySnapshots(module)) return false;
+        // Expand i128 div/rem through LLVM's same-width shift/subtract loop so
+        // the pair lowering below only needs already-supported arithmetic plus
+        // the freeze and ctlz handled above.
+        SmallVector<BinaryOperator *, 8> divisions;
+        for (auto &f : module)
+            for (auto &i : instructions(f))
+                if (auto *binop = dyn_cast<BinaryOperator>(&i))
+                    if (binop->getType()->isIntegerTy(128))
+                        switch (binop->getOpcode()) {
+                            case Instruction::UDiv:
+                            case Instruction::SDiv:
+                            case Instruction::URem:
+                            case Instruction::SRem:
+                                divisions.push_back(binop);
+                                break;
+                            default: break;
+                        }
+        for (auto *binop : divisions) {
+            bool expanded = binop->getOpcode() == Instruction::UDiv ||
+                                    binop->getOpcode() == Instruction::SDiv
+                                ? expandDivision(binop)
+                                : expandRemainder(binop);
+            if (!expanded) {
+                fail(binop);
+                return false;
+            }
+        }
         SmallVector<Instruction *, 64> original;
         for (auto &f : module)
             for (auto &i : instructions(f)) original.push_back(&i);
+        // Resolve every i128 phi first. Phis publish their pair before their
+        // operands are followed; resolving them up front breaks every SSA
+        // cycle at its phi, so a non-phi instruction reached through a
+        // backedge can never re-enter an in-flight get() and land in `erased`
+        // twice.
+        for (auto *i : original)
+            if (isa<PHINode>(i) && i->getType()->isIntegerTy(128)) {
+                if (!get(i).first) return false;
+            }
         for (auto *i : original) {
             if (i->getType()->isIntegerTy(128)) {
                 if (!get(i).first) return false;
@@ -326,7 +391,7 @@ struct Lower {
                 auto *low = b.CreateICmp(ICmpInst::getUnsignedPredicate(pred), a.first, c.first);
                 auto *high = b.CreateICmp(pred, a.second, c.second);
                 cmp->replaceAllUsesWith(b.CreateSelect(sameHigh, low, high));
-                erased.push_back(cmp);
+                mark(cmp);
             } else if (auto *t = dyn_cast<TruncInst>(i)) {
                 if (!t->getSrcTy()->isIntegerTy(128)) continue;
                 if (!t->getDestTy()->isIntegerTy() || t->getDestTy()->getIntegerBitWidth() > 64) {
@@ -336,7 +401,7 @@ struct Lower {
                 if (!a.first) return false;
                 IRBuilder<> b(t);
                 t->replaceAllUsesWith(b.CreateTrunc(a.first, t->getDestTy()));
-                erased.push_back(t);
+                mark(t);
             } else if (auto *s = dyn_cast<StoreInst>(i)) {
                 if (!s->getValueOperand()->getType()->isIntegerTy(128)) continue;
                 if (s->isAtomic() || (s->isVolatile() && !LLVMMetalPrivateMemory(wrap(s)))) { fail(i); return false; }
@@ -346,7 +411,7 @@ struct Lower {
                 auto *p = s->getPointerOperand();
                 b.CreateAlignedStore(a.first, p, s->getAlign(), s->isVolatile());
                 b.CreateAlignedStore(a.second, b.CreateGEP(b.getInt8Ty(), p, b.getInt64(8)), commonAlignment(s->getAlign(), 8), s->isVolatile());
-                erased.push_back(s);
+                mark(s);
             }
         }
         // Refuse unsupported consumers instead of leaving a partially lowered IR.

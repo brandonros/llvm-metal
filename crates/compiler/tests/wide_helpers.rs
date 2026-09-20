@@ -129,7 +129,7 @@ fn escaping_recursive_and_external_wide_abis_remain_rejected() {
 #[test]
 fn inlining_does_not_admit_unsupported_wide_operations() {
     let context = Context::create();
-    let helper = "define internal fastcc i128 @wide(i128 %x) { %r = udiv i128 %x, 7 ret i128 %r }";
+    let helper = "define internal fastcc i128 @wide(i128 %x) { %r = lshr i128 %x, 128 ret i128 %r }";
     let module = parse_ir(
         &context,
         format!("{HEADER}{KERNEL}{helper}").as_bytes(),

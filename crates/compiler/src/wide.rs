@@ -38,7 +38,7 @@ mod tests {
 
         let mut operations = [
             "add", "sub", "mul", "and", "xor", "eq", "ne", "ult", "ule", "ugt", "uge", "slt",
-            "sle", "sgt", "sge",
+            "sle", "sgt", "sge", "udiv", "urem", "sdiv", "srem",
         ]
         .into_iter()
         .map(str::to_owned)
@@ -111,6 +111,13 @@ mod tests {
                                 };
                                 let a = extend(x).wrapping_add(ca);
                                 let b = extend(y).wrapping_add(cb);
+                                // Division by zero and i128::MIN / -1 are UB.
+                                if matches!(opcode, "udiv" | "urem" | "sdiv" | "srem")
+                                    && (b == 0
+                                        || (a == i128::MIN as u128 && b == -1i128 as u128))
+                                {
+                                    continue;
+                                }
                                 let expected = match opcode {
                                     "add" => a.wrapping_add(b),
                                     "sub" => a.wrapping_sub(b),
@@ -187,6 +194,10 @@ mod tests {
                                     }
                                     "mul" => a.wrapping_mul(b),
                                     "and" => a & b,
+                                    "udiv" => a / b,
+                                    "urem" => a % b,
+                                    "sdiv" => ((a as i128) / (b as i128)) as u128,
+                                    "srem" => ((a as i128) % (b as i128)) as u128,
                                     "lshr" => a >> shift.unwrap(),
                                     "shl" => a << shift.unwrap(),
                                     "ashr" => ((a as i128) >> shift.unwrap()) as u128,

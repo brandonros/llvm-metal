@@ -157,7 +157,7 @@ fn wide_unsupported_operations_fail_without_mutating_input() {
         "%x = load i128, ptr %p",
         "store volatile i128 1, ptr %p",
         "store atomic i128 1, ptr %p seq_cst, align 16",
-        "%x = load i64, ptr %p\n%w = zext i64 %x to i128\n%r = udiv i128 %w, 3\nstore i128 %r, ptr %p",
+        "%x = load i64, ptr %p\n%w = zext i64 %x to i128\n%r = uitofp i128 %w to double\nstore double %r, ptr %p",
         "%x = load i64, ptr %p\n%w = zext i64 %x to i128\n%r = lshr i128 %w, 128\nstore i128 %r, ptr %p",
     ] {
         let module = parse_ir(&context, source(body).as_bytes(), "wide-refusal").unwrap();
