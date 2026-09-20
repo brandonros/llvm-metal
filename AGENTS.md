@@ -15,6 +15,39 @@
 - Keep small source fixtures in Git and generated artifacts under `target/`.
   Follow `tests/fixtures/README.md` when a regression needs captured IR or bitcode.
 
+## No native code
+
+- This repository has no C, C++ or Objective-C, no `build.rs`, and no `cc`,
+  `bindgen`, `cxx` or `autocxx` dependency. Keep it that way. LLVM is reached
+  only through its C API (`llvm-sys`, and Inkwell above it).
+- Rust cannot call LLVM's C++ API: the symbols are mangled, templated or inline.
+  When the C API lacks something, do not add a C++ shim, do not move one into
+  the `llvm-sys` or Inkwell forks, do not call mangled symbols, and do not
+  rewrite textual IR. First look for a Rust route. Every gap met so far had one:
+
+  | Missing from the C API | What to do in Rust |
+  |---|---|
+  | `dropAllReferences` | Replace all uses with poison, then erase. |
+  | Turn a constant expression into an instruction (the builder folds all-constant operations) | Build around a frozen-poison stand-in, then `LLVMSetOperand` the real operand. See `src/phi_constants.rs`. |
+  | `removeDeadConstantUsers` | Point dead constant users at null before deleting the global. See `src/descriptor.rs`. |
+  | Retype an `alloca` or GEP | Rebuild it in place with the same name, alignment, flags and debug location. See `src/wide.rs`. |
+  | `CloneFunctionInto` | `src/clone.rs`. PHIs are rebuilt, because a copied PHI's incoming blocks cannot be changed. |
+  | `DominatorTree`, `LoopInfo` | `src/loops.rs`. |
+  | `getUnderlyingObject(s)` | `src/pointer_provenance.rs`, bounded and fail-closed. |
+  | A pass parameter the textual pipeline does not accept | Look for an LLVM option and set it with `LLVMParseCommandLineOptions`. See `run_inference` in `src/address_spaces.rs`. |
+  | Remove a module flag or named-metadata operand | Replace the operand instead, with `LLVMReplaceMDNodeOperandWith`. See `neutralize_codegen_flags` in `src/air.rs`. |
+  | Read a constant wider than 64 bits | Split it through LLVM's constant folding. See `halves` in `src/wide.rs`. |
+  | Read `inalloca`/`swifterror`, create a `distinct` metadata node, clone a `DISubprogram` | No route. Refuse the input or drop the fact, and say so in a comment. |
+
+- If no Rust route exists, stop and raise it on an issue with the evidence: the
+  exact LLVM C++ API, the C API functions checked, and what was tried. Native
+  code is added only after that discussion, as one generic `LLVMExt*` function
+  that wraps one LLVM utility, holds no Metal policy, and states in a comment
+  which gap it covers and what would let it be deleted.
+- A single passing kernel does not prove a behaviour is safe to drop. Dropping
+  PIC/PIE flag handling passed one GPU test and then failed Apple's pipeline
+  compiler on two other kernels.
+
 ## Documentation
 
 - Keep `docs/air-profile.md` as the supported-profile reference and
