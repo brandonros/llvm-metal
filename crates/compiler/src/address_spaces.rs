@@ -7,12 +7,6 @@ use inkwell::{
     module::Module,
 };
 
-unsafe extern "C" {
-    // LLVM's C API cannot select the flat address space for this existing pass,
-    // and AIR has no upstream TargetMachine to supply it. See native/llvm_ext.cpp.
-    fn LLVMExtRunInferAddressSpaces(function: LLVMValueRef, flat: u32);
-}
-
 unsafe fn space(value: LLVMValueRef) -> u32 {
     unsafe { LLVMGetPointerAddressSpace(LLVMTypeOf(value)) }
 }
@@ -156,6 +150,39 @@ unsafe fn type_constant_volatile_loads(function: LLVMValueRef) {
     }
 }
 
+// LLVM's pass takes its flat address space from the target, and AIR has no
+// upstream TargetMachine. The textual pipeline accepts no parameter for it, but
+// LLVM's own -assume-default-is-flat-addrspace option selects address space 0.
+// It is process-wide, which is what this compiler wants for every module. An
+// NVPTX TargetMachine is not a substitute: it also assumes allocas live in
+// NVPTX's address space 5. If a future LLVM drops the option, option parsing
+// reports it and exits instead of silently skipping inference.
+unsafe fn run_inference(function: LLVMValueRef) {
+    use inkwell::llvm_sys::{support::LLVMParseCommandLineOptions, transforms::pass_builder::*};
+    static FLAT: std::sync::Once = std::sync::Once::new();
+    unsafe {
+        FLAT.call_once(|| {
+            let arguments = [
+                c"llvm-metal".as_ptr(),
+                c"-assume-default-is-flat-addrspace".as_ptr(),
+            ];
+            LLVMParseCommandLineOptions(2, arguments.as_ptr(), std::ptr::null());
+        });
+        let options = LLVMCreatePassBuilderOptions();
+        let failed = LLVMRunPassesOnFunction(
+            function,
+            c"infer-address-spaces".as_ptr(),
+            std::ptr::null_mut(),
+            options,
+        );
+        LLVMDisposePassBuilderOptions(options);
+        assert!(
+            failed.is_null(),
+            "LLVM rejected the infer-address-spaces pipeline"
+        );
+    }
+}
+
 /// Infer one defined function. Call specialization uses this per caller.
 pub(crate) unsafe fn infer_function(function: LLVMValueRef) {
     unsafe {
@@ -163,7 +190,7 @@ pub(crate) unsafe fn infer_function(function: LLVMValueRef) {
             return;
         }
         type_nullable_phis(function);
-        LLVMExtRunInferAddressSpaces(function, 0);
+        run_inference(function);
         type_constant_volatile_loads(function);
         fold_constant_casts(function);
     }

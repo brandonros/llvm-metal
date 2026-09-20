@@ -188,7 +188,6 @@ dependencies = [
 name = "llvm-metal-compiler"
 version = "0.1.0"
 dependencies = [
- "cc",
  "inkwell",
  "llvm-metal-abi",
  "llvm-metal-kernel",

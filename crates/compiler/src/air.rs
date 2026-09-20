@@ -615,19 +615,8 @@ pub fn legalize_with_policy<'ctx>(
             }
         }
     }
-    unsafe extern "C" {
-        // The C API cannot delete a module flag. See native/llvm_ext.cpp.
-        fn LLVMExtRemoveModuleFlag(
-            module: inkwell::llvm_sys::prelude::LLVMModuleRef,
-            key: *const std::ffi::c_char,
-            length: usize,
-        );
-    }
-    // Remove only host code-generation flags that do not apply to AIR.
-    for flag in ["PIC Level", "PIE Level"] {
-        // SAFETY: verified live module, exclusive mutation; the key outlives the call.
-        unsafe { LLVMExtRemoveModuleFlag(module.as_mut_ptr(), flag.as_ptr().cast(), flag.len()) };
-    }
+    // Source PIC/PIE module flags are left in place. LLVM's C API cannot remove
+    // a module flag, and Metal accepts AIR that carries them.
     crate::address_spaces::infer(&module);
     if policy == InliningPolicy::Selective {
         crate::calls::specialize(&module, &interface.entry)?;
