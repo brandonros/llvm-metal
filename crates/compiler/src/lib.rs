@@ -80,7 +80,8 @@ fn verify(module: Module<'_>) -> Result<Module<'_>, InputError> {
 pub mod air;
 pub mod compile;
 pub mod descriptor;
-mod wide;
+#[doc(hidden)]
+pub mod wide;
 
 mod libcalls;
 
@@ -89,7 +90,13 @@ mod wide_helpers;
 #[doc(hidden)]
 pub mod odd;
 
+mod loops;
+
 mod memory;
+
+mod address_spaces;
+
+mod specialize;
 
 mod parity;
 

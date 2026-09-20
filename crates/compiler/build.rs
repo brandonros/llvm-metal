@@ -1,7 +1,7 @@
 use std::{env, path::PathBuf, process::Command};
 fn main() {
     let sources = [
-        "native/address_spaces.cpp",
+        "native/llvm_ext.cpp",
         "native/calls.cpp",
         "native/pointer_provenance.cpp",
         "native/module_flags.cpp",

@@ -130,14 +130,53 @@ fn constant_initializer(f: FunctionValue<'_>) -> bool {
             })
 }
 
+// Retaining a nullable pointer iterator miscompiles P-256's r-only matcher on
+// Apple M5, while inlining that boundary passes the complete workload. Keep this
+// structural class on the proven inlining path until retained execution has a
+// sufficient target-level proof. Straight-line pointer joins remain eligible.
 fn nullable_pointer_loop(f: FunctionValue<'_>) -> bool {
-    unsafe extern "C" {
-        fn LLVMMetalHasNullablePointerLoop(
-            function: inkwell::llvm_sys::prelude::LLVMValueRef,
-        ) -> u32;
+    use inkwell::llvm_sys::{LLVMTypeKind, core::*};
+    if f.count_basic_blocks() == 0 {
+        return false;
     }
     // SAFETY: read-only analysis of a verified live function.
-    unsafe { LLVMMetalHasNullablePointerLoop(f.as_value_ref()) != 0 }
+    let found = unsafe {
+        let loops = crate::loops::Loops::of(f.as_value_ref());
+        let pointer_phi = |header| {
+            let mut phi = LLVMGetFirstInstruction(header);
+            while !phi.is_null() && !LLVMIsAPHINode(phi).is_null() {
+                if LLVMGetTypeKind(LLVMTypeOf(phi)) == LLVMTypeKind::LLVMPointerTypeKind {
+                    return true;
+                }
+                phi = LLVMGetNextInstruction(phi);
+            }
+            false
+        };
+        f.get_basic_blocks().into_iter().any(|block| {
+            let null_operation = block.get_instructions().any(|i| {
+                use inkwell::values::InstructionOpcode::{ICmp, Phi, Select};
+                let value = i.as_value_ref();
+                matches!(i.get_opcode(), ICmp | Phi | Select)
+                    && (0..LLVMGetNumOperands(value) as u32)
+                        .any(|n| !LLVMIsAConstantPointerNull(LLVMGetOperand(value, n)).is_null())
+            });
+            null_operation
+                && loops
+                    .headers_containing(block.as_mut_ptr())
+                    .any(pointer_phi)
+        })
+    };
+    if crate::parity::enabled() {
+        unsafe extern "C" {
+            fn LLVMMetalHasNullablePointerLoop(
+                function: inkwell::llvm_sys::prelude::LLVMValueRef,
+            ) -> u32;
+        }
+        // SAFETY: read-only analysis of a verified live function.
+        let reference = unsafe { LLVMMetalHasNullablePointerLoop(f.as_value_ref()) != 0 };
+        assert_eq!(reference, found, "nullable pointer loop parity");
+    }
+    found
 }
 
 pub(crate) fn retained(
@@ -252,24 +291,7 @@ fn select(
 }
 
 pub(crate) fn specialize(module: &Module<'_>, entry: &str) -> Result<(), String> {
-    unsafe extern "C" {
-        fn LLVMMetalSpecializeCalls(
-            module: inkwell::llvm_sys::prelude::LLVMModuleRef,
-            entry: *const std::ffi::c_char,
-        ) -> *mut std::ffi::c_char;
-    }
-    let entry = std::ffi::CString::new(entry).map_err(|e| e.to_string())?;
-    // SAFETY: a verified, exclusively owned module; native diagnostics use LLVM's allocator.
-    unsafe {
-        let error = LLVMMetalSpecializeCalls(module.as_mut_ptr(), entry.as_ptr());
-        if !error.is_null() {
-            let text = std::ffi::CStr::from_ptr(error)
-                .to_string_lossy()
-                .into_owned();
-            inkwell::llvm_sys::core::LLVMDisposeMessage(error);
-            return Err(text);
-        }
-    }
+    crate::specialize::run(module, entry)?;
     module.verify().map_err(|e| e.to_string())
 }
 

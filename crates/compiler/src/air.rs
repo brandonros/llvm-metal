@@ -626,21 +626,18 @@ pub fn legalize_with_policy<'ctx>(
         }
     }
     unsafe extern "C" {
-        fn LLVMMetalInferAddressSpaces(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
         fn LLVMMetalRemoveCodegenFlags(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
     }
     // SAFETY: verified live module, exclusive mutation during the native pass.
     unsafe {
         LLVMMetalRemoveCodegenFlags(module.as_mut_ptr());
-        LLVMMetalInferAddressSpaces(module.as_mut_ptr());
     }
+    crate::address_spaces::infer(&module);
     if policy == InliningPolicy::Selective {
         crate::calls::specialize(&module, &interface.entry)?;
         // Specialization introduces generic casts only within the cloned bodies.
         // Infer again with each formal parameter's actual Metal address space.
-        unsafe {
-            LLVMMetalInferAddressSpaces(module.as_mut_ptr());
-        }
+        crate::address_spaces::infer(&module);
     }
     passes(
         &module,

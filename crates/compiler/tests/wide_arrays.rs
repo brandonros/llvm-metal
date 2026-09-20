@@ -68,23 +68,7 @@ fn check_cases(offset: usize, mut run: impl FnMut(&mut [u8])) {
 }
 
 fn lower(module: &inkwell::module::Module<'_>) {
-    unsafe extern "C" {
-        fn LLVMMetalLowerWideIntegers(
-            module: inkwell::llvm_sys::prelude::LLVMModuleRef,
-        ) -> *mut std::ffi::c_char;
-    }
-    // SAFETY: disposable, verified module and owned native diagnostic.
-    unsafe {
-        let error = LLVMMetalLowerWideIntegers(module.as_mut_ptr());
-        if !error.is_null() {
-            let message = std::ffi::CStr::from_ptr(error)
-                .to_string_lossy()
-                .into_owned();
-            inkwell::llvm_sys::core::LLVMDisposeMessage(error);
-            panic!("{message}");
-        }
-    }
-    module.verify().unwrap();
+    llvm_metal_compiler::wide::lower(module).unwrap_or_else(|message| panic!("{message}"));
 }
 
 #[test]
