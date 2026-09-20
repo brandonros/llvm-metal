@@ -397,7 +397,11 @@ impl Lower {
                     return false;
                 }
             }
-            let removing: HashSet<LLVMValueRef> = self.erased.iter().copied().collect();
+            // A use-def cycle through more than one PHI can lower an instruction
+            // twice over the same PHI placeholders. Erase it only once.
+            let mut removing = HashSet::new();
+            self.erased
+                .retain(|&instruction| removing.insert(instruction));
             for &instruction in &self.erased.clone() {
                 if !odd(LLVMTypeOf(instruction)) {
                     continue;

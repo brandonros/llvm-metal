@@ -326,6 +326,38 @@ fn check_cases(width: u32, mut run: impl FnMut(&mut [u8])) {
     }
 }
 
+// A loop body listed before its header is reached before the header's PHI has
+// a placeholder, so promotion re-enters the body instruction through the PHI.
+#[test]
+fn body_listed_before_its_phi_is_promoted_and_erased_once() {
+    let source = format!(
+        r#"target triple = "nvptx64-nvidia-cuda"
+target datalayout = "{NVPTX_LAYOUT}"
+define void @kernel(ptr %p) {{
+entry:
+ %initial = load i24, ptr %p, align 1
+ br label %head
+body:
+ %next = add i24 %acc, 65793
+ %j = add i32 %i, 1
+ br label %head
+head:
+ %i = phi i32 [0, %entry], [%j, %body]
+ %acc = phi i24 [%initial, %entry], [%next, %body]
+ %done = icmp eq i32 %i, 3
+ br i1 %done, label %exit, label %body
+exit:
+ store i24 %acc, ptr %p, align 1
+ ret void
+}}
+"#
+    );
+    let context = Context::create();
+    let module = parse_ir(&context, source.as_bytes(), "odd-phi-order").unwrap();
+    promote(&module);
+    assert!(!module.print_to_string().to_string().contains("i24"));
+}
+
 fn promote(module: &inkwell::module::Module<'_>) {
     llvm_metal_compiler::odd::lower(module).unwrap_or_else(|message| panic!("{message}"));
 }

@@ -51,6 +51,7 @@ fn rust(module: &Module<'_>) -> Result<(), String> {
             int64: LLVMInt64TypeInContext(context),
             values: HashMap::new(),
             erased: Vec::new(),
+            marked: HashSet::new(),
             error: None,
         };
         if lower.run() {
@@ -168,10 +169,20 @@ struct Lower {
     int64: LLVMTypeRef,
     values: HashMap<LLVMValueRef, Pair>,
     erased: Vec<LLVMValueRef>,
+    marked: HashSet<LLVMValueRef>,
     error: Option<String>,
 }
 
 impl Lower {
+    // A use-def cycle through more than one PHI can re-enter get() for an
+    // instruction that is still being lowered. The re-entrant call produces an
+    // equivalent pair over the same PHI placeholders, but the instruction must
+    // still be erased only once.
+    fn mark(&mut self, instruction: LLVMValueRef) {
+        if self.marked.insert(instruction) {
+            self.erased.push(instruction);
+        }
+    }
     unsafe fn fail(&mut self, value: LLVMValueRef) -> Option<Pair> {
         if self.error.is_none() {
             unsafe {
@@ -260,9 +271,9 @@ impl Lower {
                 for extract in extracts {
                     let index = *LLVMGetIndices(extract);
                     self.values.insert(extract, elements[index as usize]);
-                    self.erased.push(extract);
+                    self.mark(extract);
                 }
-                self.erased.push(load);
+                self.mark(load);
             }
             true
         }
@@ -414,7 +425,7 @@ impl Lower {
                     let high = LLVMBuildPhi(b, ty, c"wide.high".as_ptr());
                     // Publish placeholders before following backedges in cyclic SSA.
                     self.values.insert(value, (low, high));
-                    self.erased.push(value);
+                    self.mark(value);
                     for n in 0..LLVMCountIncoming(value) {
                         let mut incoming = self.get(LLVMGetIncomingValue(value, n))?;
                         let mut block = LLVMGetIncomingBlock(value, n);
@@ -635,7 +646,7 @@ impl Lower {
             // Dropping no-wrap/exact flags is conservative: all defined inputs retain
             // their result; we do not invent a stronger poison/overflow contract.
             self.values.insert(value, result);
-            self.erased.push(value);
+            self.mark(value);
             Some(result)
         }
     }
@@ -765,7 +776,7 @@ impl Lower {
                     LLVMSetVolatile(high, volatile);
                 }
             }
-            self.erased.push(instruction);
+            self.mark(instruction);
             true
         }
     }
