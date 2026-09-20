@@ -1,11 +1,11 @@
 {
-  description = "LLVM 21 development environment for llvm-metal";
+  description = "LLVM 22 development environment for llvm-metal";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
-  inputs.rust-overlay.url = "github:oxalica/rust-overlay/753568957a87312ed599cba5699e67126eded6c0";
+  inputs.rust-overlay.url = "github:oxalica/rust-overlay/1fb104a12a8667045559b2575d6d448ae2fbd99b";
   inputs.rust-overlay.inputs.nixpkgs.follows = "nixpkgs";
   inputs.llvm-downgrade = {
-    url = "github:JuliaLLVM/llvm-downgrade/49459235028889ea741f2aee3e7f346d53f68f5d";
+    url = "github:JuliaLLVM/llvm-downgrade/09c2e50d4526b08f55010f6c091ace35332a78a8";
     flake = false;
   };
 
@@ -20,10 +20,10 @@
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };
-          llvm = pkgs.llvmPackages_21.llvm;
+          llvm = pkgs.llvmPackages_22.llvm;
           downgrade = pkgs.stdenv.mkDerivation {
             pname = "llvm-downgrade";
-            version = "4945923";
+            version = "09c2e50";
             src = llvm-downgrade;
             nativeBuildInputs = [ pkgs.cmake pkgs.ninja ];
             buildInputs = [ llvm pkgs.libffi ];
@@ -33,22 +33,14 @@
               "-DLLVMDG_BUILD_TESTS=OFF"
             ];
           };
-          # Official stable distribution with NVPTX libraries and LLVM 21.1.8.
-          # Keep this producer separate from the newer compiler development Rust.
-          fixtureRust = pkgs.rust-bin.stable."1.93.0".minimal.override {
-            targets = [ "nvptx64-nvidia-cuda" ];
-          };
-        in {
-          default = pkgs.mkShell {
-            packages = [ pkgs.cargo pkgs.rustc pkgs.rustfmt pkgs.clippy llvm downgrade ];
+          # Official stable distribution: its LLVM must match `llvm` above, and
+          # the NVPTX target produces the fixture bitcode.
+          toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+          shell = pkgs.mkShell {
+            packages = [ toolchain llvm downgrade pkgs.python3 ];
             buildInputs = [ pkgs.libffi ];
-            LLVM_SYS_211_PREFIX = "${llvm.dev}";
+            LLVM_SYS_221_PREFIX = "${llvm.dev}";
           };
-          rust-fixtures = pkgs.mkShell {
-            packages = [ fixtureRust llvm downgrade pkgs.python3 ];
-            buildInputs = [ pkgs.libffi ];
-            LLVM_SYS_211_PREFIX = "${llvm.dev}";
-          };
-        });
+        in { default = shell; rust-fixtures = shell; });
     };
 }

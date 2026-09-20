@@ -36,7 +36,7 @@ pub fn parse_ir<'ctx>(
 }
 
 /// Parse LLVM bitcode with the linked LLVM version, then run its verifier.
-/// Newer producer versions are not guaranteed to be readable by LLVM 21.
+/// Newer producer versions are not guaranteed to be readable by LLVM 22.
 pub fn parse_bitcode<'ctx>(
     context: &'ctx Context,
     bytes: &[u8],

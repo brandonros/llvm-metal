@@ -74,7 +74,8 @@ unsafe fn copy_function_properties(
         // and AIR legalization strips them after specialization.
         // A subprogram may describe one function only and the C API cannot clone
         // one, so the copy carries no debug info. Other attachments are shared.
-        let debug = LLVMGetMDKindID(c"dbg".as_ptr(), 3);
+        let context = LLVMGetTypeContext(LLVMTypeOf(to));
+        let debug = LLVMGetMDKindIDInContext(context, c"dbg".as_ptr(), 3);
         let mut count = 0;
         let entries = LLVMGlobalCopyAllMetadata(from, &mut count);
         for i in 0..count as u32 {

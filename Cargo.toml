@@ -8,4 +8,4 @@ rust-version = "1.85"
 repository = "https://github.com/brandonros/llvm-metal"
 
 [workspace.dependencies]
-inkwell = { version = "=0.10.0", default-features = false, features = ["llvm21-1-prefer-dynamic", "target-aarch64", "target-x86"] }
+inkwell = { version = "=0.10.0", default-features = false, features = ["llvm22-1-prefer-dynamic", "target-aarch64", "target-x86"] }

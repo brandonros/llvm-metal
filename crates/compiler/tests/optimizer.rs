@@ -83,7 +83,7 @@ fn check_producer(script: PathBuf) {
 }
 
 #[test]
-#[ignore = "requires Python 3 and LLVM 21.1.8 from .#rust-fixtures"]
+#[ignore = "requires Python 3 and LLVM 22.1.8 from .#rust-fixtures"]
 fn fixture_producer_bounds_bech32_analysis_and_preserves_writes() {
     check_producer(
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/rust-fixtures/build.py"),

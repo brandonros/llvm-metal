@@ -66,11 +66,11 @@ def main():
         if os.environ.get(name):
             raise RuntimeError(f"unset {name}; use nix develop .#rust-fixtures")
     rust_version = run("rustc", "-vV", capture=True)
-    if "release: 1.93.0\n" not in rust_version or "LLVM version: 21.1.8\n" not in rust_version:
-        raise RuntimeError("expected stable Rust 1.93.0 / LLVM 21.1.8; use the rust-fixtures Nix shell")
+    if "release: 1.98.1\n" not in rust_version or "LLVM version: 22.1.8\n" not in rust_version:
+        raise RuntimeError("expected stable Rust 1.98.1 / LLVM 22.1.8; use the rust-fixtures Nix shell")
     llvm_version = run("llvm-link", "--version", capture=True)
-    if "LLVM version 21.1.8" not in llvm_version:
-        raise RuntimeError("expected LLVM tools 21.1.8")
+    if "LLVM version 22.1.8" not in llvm_version:
+        raise RuntimeError("expected LLVM tools 22.1.8")
     interfaces = {p.stem: p for p in (FIXTURE / "interfaces").glob("*.json")}
     if options.fixture == "shallenge":
         interfaces["shallenge_sha256_32"] = FIXTURE / "kernel.interface.json"

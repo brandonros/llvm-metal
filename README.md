@@ -1,6 +1,6 @@
 # llvm-metal
 
-Compile LLVM 21 IR or bitcode into Metal libraries for Apple GPUs.
+Compile LLVM 22 IR or bitcode into Metal libraries for Apple GPUs.
 Experimental support for integer kernels with explicit buffer arguments;
 see the [supported profile and limitations](docs/air-profile.md).
 
@@ -23,7 +23,7 @@ output directory. Run `llvm-metalc --help` for CLI usage. Execute libraries
 through the `llvm-metal-runtime` crate on macOS with an Apple GPU.
 
 Apple's GPU compiler accepts only LLVM 14-encoded bitcode; newer encodings
-crash the OS compiler service. `llvm-downgrade` re-serializes the LLVM 21 AIR
+crash the OS compiler service. `llvm-downgrade` re-serializes the LLVM 22 AIR
 module into that encoding. This constraint is undocumented and was determined
 empirically (see Metal.jl/GPUCompiler.jl).
 

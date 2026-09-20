@@ -151,7 +151,7 @@ commands follow the same provenance contract as Shallenge.
 
 ### Shared producer
 
-The producer is official stable Rust 1.93.0 with LLVM 21.1.8 and prebuilt
+The producer is official stable Rust 1.98.1 with LLVM 22.1.8 and prebuilt
 `nvptx64-nvidia-cuda` libraries. It uses no nightly build-std, Rust-CUDA,
 CUDA toolkit or PTX. The producer script itself stops at LLVM bitcode; compiler
 and runtime tests subsequently establish AIR/GPU correctness.
