@@ -1,6 +1,6 @@
 # Initial AIR profile
 
-Input is verified LLVM 21 IR/bitcode with the stock
+Input is verified LLVM 22 IR/bitcode with the stock
 `nvptx64-nvidia-cuda` triple and explicit data layout. This triple selects the
 Rust producer's platform model; no NVIDIA instructions or PTX are emitted.
 The interface describes one C entry, one to 31 buffers, byte sizes, alignments
@@ -25,7 +25,26 @@ the descriptor is exported as `__llvm_metal_descriptor_<entry>` and rooted in
 LLVM's compiler-used list. These annotations are a retention mechanism, not a
 promise that arbitrary subsequent optimizer invocations preserve metadata.
 
-Extract immediately after bitcode linking, before internalization or DCE:
+`llvm-metalc build` runs the whole producer: it compiles a kernel crate for
+`nvptx64-nvidia-cuda` with the Rust on `PATH`, links the bitcode in its archives,
+extracts descriptors, then selects, prepares, optimizes, checks and compiles each
+entry into a bundle with a `kernel.build.json` manifest.
+
+```sh
+llvm-metalc build --crate crates/kernels/solana --output bundle
+llvm-metalc build --rlib liba.rlib --rlib libb.rlib --output bundle   # archives Cargo already built
+```
+
+The Rust toolchain is the only thing a consumer supplies, and its LLVM must be
+the linked LLVM's major and no newer. With `--cases group.json`
+(`{"kernel": entry, "cases": [{"name", "entry", ...}]}`) every case is built from
+one link into `cases/<name>`, in parallel, and listed in `kernel.group.json`.
+Archives are linked in file-name order, so the same sources give the same bundle.
+Each entry is optimized in a process of its own because LLVM's options are
+process-wide. `--keep-stage` keeps the intermediate modules.
+
+The steps are also available separately. Extract immediately after bitcode
+linking, before internalization or DCE:
 
 ```sh
 llvm-metalc extract linked.bc --output extracted
@@ -107,7 +126,7 @@ signature, including nested calls and constant-table offsets. Private joins
 require proven private roots; loaded/unknown pointer flows fail. Specialization
 is bounded to 4096 instances. Legalization and pointer/metadata checks run in
 all surviving definitions. Private volatile accesses and zeroization are
-preserved. LLVM 21 parameter facts missing from the legacy writer's encoding
+preserved. LLVM 22 parameter facts missing from the legacy writer's encoding
 are dropped explicitly; ABI attributes such as `sret` remain intact.
 
 The existing LLVM writer and metallib container carry the helper definitions.
@@ -223,7 +242,7 @@ retained in that space; mixed private/device or device/constant merges remain
 unsupported. The AIR profile uses zero-valued null pointers in its supported
 spaces, allowing the constant null casts introduced by inference to fold.
 The compiler emits AIR 2.4/Metal 3.0 metadata and resource limits. The pinned
-LLVM-21-compatible llvm-downgrade writes bitcode version 14; native LLVM verifies
+LLVM-22-compatible llvm-downgrade writes bitcode version 14; native LLVM verifies
 that result before the single-function macOS metallib container is constructed.
 A final normalization puts constant-expression PHI operands on incoming edges:
 the pinned legacy writer otherwise materializes some of these before the PHI,

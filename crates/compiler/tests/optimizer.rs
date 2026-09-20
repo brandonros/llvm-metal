@@ -1,4 +1,4 @@
-//! The actual producer pass sequence must compile a reduced Bech32 loop promptly
+//! The builder's cleanup pipeline must compile a reduced Bech32 loop promptly
 //! and preserve its writes. Real encoders are checked separately on the GPU.
 use inkwell::{
     OptimizationLevel,
@@ -6,8 +6,8 @@ use inkwell::{
     module::Module,
     targets::{CodeModel, InitializationConfig, RelocMode, Target, TargetMachine},
 };
-use llvm_metal_compiler::{parse_bitcode, parse_ir};
-use std::{fs, path::PathBuf, process::Command, sync::OnceLock};
+use llvm_metal_compiler::{build::unit::post_inline, parse_ir};
+use std::{fs, path::PathBuf, sync::OnceLock, time::Instant};
 
 fn check_writes(module: Module<'_>) {
     let context = module.get_context();
@@ -53,47 +53,16 @@ fn check_writes(module: Module<'_>) {
     assert_eq!(bytes, expected);
 }
 
-fn check_producer(script: PathBuf) {
+#[test]
+fn cleanup_bounds_bech32_analysis_and_preserves_writes() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let source = root.join("tests/fixtures/optimizer/bech32-counters.ll");
-    let context = Context::create();
-    check_writes(parse_ir(&context, &fs::read(&source).unwrap(), "bech32").unwrap());
-    let directory = tempfile::tempdir().unwrap();
-    let output = directory.path().join("optimized.bc");
-    // Call the producer's real helper, with a generous deadline instead of
-    // duplicating its pipeline in the test. Python kills/reaps opt on timeout.
-    let result = Command::new("python3")
-        .args([
-            "-B",
-            "-c",
-            "import runpy,sys; runpy.run_path(sys.argv[1])['post_inline'](sys.argv[2], sys.argv[3], timeout=10)",
-        ])
-        .arg(&script)
-        .arg(&source)
-        .arg(&output)
-        .output()
-        .unwrap();
-    assert!(
-        result.status.success(),
-        "{}: {}",
-        script.display(),
-        String::from_utf8_lossy(&result.stderr)
-    );
-    check_writes(parse_bitcode(&context, &fs::read(output).unwrap(), "optimized").unwrap());
-}
-
-#[test]
-#[ignore = "requires Python 3 and LLVM 21.1.8 from .#rust-fixtures"]
-fn fixture_producer_bounds_bech32_analysis_and_preserves_writes() {
-    check_producer(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/rust-fixtures/build.py"),
-    );
-}
-
-#[test]
-#[ignore = "requires .#rust-fixtures and LLVM_METAL_CONSUMER_PATH"]
-fn consumer_producer_bounds_bech32_analysis_and_preserves_writes() {
-    let root =
-        std::env::var_os("LLVM_METAL_CONSUMER_PATH").expect("set the isolated consumer path");
-    check_producer(PathBuf::from(root).join("scripts/build-metal.py"));
+    let source = fs::read(root.join("tests/fixtures/optimizer/bech32-counters.ll")).unwrap();
+    let (context, reread) = (Context::create(), Context::create());
+    check_writes(parse_ir(&context, &source, "bech32").unwrap());
+    // O3 directly on these loops spends minutes in ScalarEvolution; the
+    // builder's ordering exists to avoid that, so a regression shows as time.
+    let start = Instant::now();
+    let optimized = post_inline(parse_ir(&context, &source, "bech32").unwrap(), &reread).unwrap();
+    assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
+    check_writes(optimized);
 }
