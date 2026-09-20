@@ -45,6 +45,33 @@ before and after a change.
    Park unfinished work on a pushed branch whose message states its condition.
    Every PR lists which checks ran, on what hardware, and which were skipped.
 
+## Tooling rules
+
+Each of these removes something that was built here and had to be deleted.
+
+- **No Python, no shell scripts, no second language.** Everything is Rust in this
+  workspace: a `#[test]`, a library function, or an `llvm-metalc` subcommand.
+  What used to be `opt`, `llvm-link`, `llvm-ar` and `llvm-nm` calls from a script
+  is `crates/compiler/src/build`.
+- **Tests are `cargo test`.** No runner around the runner: no test inventories,
+  coverage or ownership JSON, discovery cross-checks, or provenance files for
+  fixtures. A test that must not run by default is `#[ignore]` with its
+  requirement in the reason.
+- **No workload kernels here.** vanity-miner-rs is the acceptance bench. This
+  repository keeps small IR tests and the single-file kernels that test its own
+  crates. A compiler bug found by a workload becomes a reduced IR fixture under
+  `tests/fixtures/`, never a fixture workspace, a consumer pin or a
+  `*_CONSUMER_PATH` variable.
+- **Consumers supply bitcode and nothing else.** Anything needed to turn a kernel
+  crate into a metallib goes into `llvm-metalc build` and the flake package. A
+  consumer's flake must never need LLVM, llvm-downgrade or this source tree.
+- **No metadata the code does not read.** No hand-kept catalogs or manifests, and
+  no checker that compares two hand-written lists.
+- **Fix forward.** When an LLVM or Rust bump breaks something, find the cause and
+  fix it on the new toolchain. Do not retreat to the old one to keep tests green,
+  and decide the layer first (rule 2): the LLVM 22 break was one function in the
+  workload, not a missing lowering here.
+
 ## No native code
 
 - This repository has no C, C++ or Objective-C, no `build.rs`, and no `cc`,
