@@ -1059,14 +1059,7 @@ pub fn legalize_with_policy<'ctx>(
             .map_err(|e| e.to_string())?;
     }
     crate::odd::lower(&module)?;
-    unsafe extern "C" {
-        fn LLVMMetalPreparePhiConstants(module: inkwell::llvm_sys::prelude::LLVMModuleRef);
-    }
-    // SAFETY: final verified-shape module; LLVM places constant-expression PHI
-    // operands on their incoming edges before the legacy writer handles them.
-    unsafe {
-        LLVMMetalPreparePhiConstants(module.as_mut_ptr());
-    }
+    crate::phi_constants::prepare(&module)?;
     crate::calls::strip_modern_parameter_facts(&module);
     module.verify().map_err(|e| e.to_string())?;
     Ok((module, bindings))

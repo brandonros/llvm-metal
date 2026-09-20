@@ -1,11 +1,9 @@
 use std::{env, path::PathBuf, process::Command};
 fn main() {
     let sources = [
-        "native/descriptors.cpp",
         "native/address_spaces.cpp",
         "native/calls.cpp",
         "native/pointer_provenance.cpp",
-        "native/phi_constants.cpp",
         "native/module_flags.cpp",
         "native/wide_integers.cpp",
     ];

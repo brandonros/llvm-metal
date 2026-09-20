@@ -1,5 +1,9 @@
 //! Extract the target's constant bytes before any internalization or DCE.
-use inkwell::{module::Module, values::BasicValueEnum};
+use inkwell::{
+    llvm_sys::{LLVMLinkage, LLVMOpcode, core::*, prelude::*},
+    module::Module,
+    values::BasicValueEnum,
+};
 use llvm_metal_abi::descriptor::Descriptor;
 use std::collections::BTreeMap;
 
@@ -83,14 +87,128 @@ pub fn extract<'ctx>(
             return Err("duplicate descriptor entry".into());
         }
     }
-    unsafe extern "C" {
-        fn LLVMMetalRemoveDescriptors(module: inkwell::llvm_sys::prelude::LLVMModuleRef) -> bool;
-    }
-    // SAFETY: verified private clone; the helper rejects executable uses and
-    // preserves unrelated metadata roots before removing descriptor globals.
-    if !unsafe { LLVMMetalRemoveDescriptors(module.as_mut_ptr()) } {
-        return Err("descriptor has non-metadata uses".into());
-    }
+    remove(&module)?;
     module.verify().map_err(|e| e.to_string())?;
     Ok((module, descriptors))
+}
+
+// A constant is dead when nothing but other dead constants refers to it. The
+// initializer of a deleted llvm.used list is the expected case.
+unsafe fn dead_constant(value: LLVMValueRef) -> bool {
+    unsafe {
+        if LLVMIsAConstant(value).is_null() || !LLVMIsAGlobalValue(value).is_null() {
+            return false;
+        }
+        let mut use_ = LLVMGetFirstUse(value);
+        while !use_.is_null() {
+            if !dead_constant(LLVMGetUser(use_)) {
+                return false;
+            }
+            use_ = LLVMGetNextUse(use_);
+        }
+        true
+    }
+}
+
+// Pointer casts and all-zero GEPs, as Value::stripPointerCasts. Not aliases.
+unsafe fn strip_pointer_casts(mut value: LLVMValueRef) -> LLVMValueRef {
+    unsafe {
+        while !LLVMIsAConstantExpr(value).is_null() {
+            let zero = move |i| {
+                let index = LLVMGetOperand(value, i);
+                !LLVMIsAConstantInt(index).is_null() && LLVMIsNull(index) != 0
+            };
+            match LLVMGetConstOpcode(value) {
+                LLVMOpcode::LLVMBitCast | LLVMOpcode::LLVMAddrSpaceCast => {}
+                LLVMOpcode::LLVMGetElementPtr
+                    if (1..LLVMGetNumOperands(value) as u32).all(zero) => {}
+                _ => break,
+            }
+            value = LLVMGetOperand(value, 0);
+        }
+        value
+    }
+}
+
+unsafe fn is_descriptor(value: LLVMValueRef) -> bool {
+    unsafe {
+        let value = strip_pointer_casts(value);
+        if LLVMIsAGlobalValue(value).is_null() {
+            return false;
+        }
+        let mut length = 0;
+        let name = LLVMGetValueName2(value, &mut length);
+        std::slice::from_raw_parts(name.cast::<u8>(), length)
+            .starts_with(llvm_metal_kernel::PREFIX.as_bytes())
+    }
+}
+
+// Rebuild one used list without descriptor entries, keeping unrelated operands
+// (including constant-expression casts), the section and the address space.
+unsafe fn filter_used(module: LLVMModuleRef, name: &std::ffi::CStr) {
+    unsafe {
+        let list = LLVMGetNamedGlobal(module, name.as_ptr());
+        if list.is_null() || LLVMGetInitializer(list).is_null() {
+            return;
+        }
+        let initializer = LLVMGetInitializer(list);
+        let mut kept: Vec<_> = (0..LLVMGetNumOperands(initializer) as u32)
+            .map(|i| LLVMGetOperand(initializer, i))
+            .filter(|&entry| !is_descriptor(entry))
+            .collect();
+        if kept.len() == LLVMGetNumOperands(initializer) as usize {
+            return;
+        }
+        let element = LLVMGetElementType(LLVMGlobalGetValueType(list));
+        let section = LLVMGetSection(list);
+        let section = (!section.is_null()).then(|| std::ffi::CStr::from_ptr(section).to_owned());
+        let space = LLVMGetPointerAddressSpace(LLVMTypeOf(list));
+        LLVMDeleteGlobal(list);
+        if kept.is_empty() {
+            return;
+        }
+        let ty = LLVMArrayType2(element, kept.len() as u64);
+        let new = LLVMAddGlobalInAddressSpace(module, ty, name.as_ptr(), space);
+        LLVMSetLinkage(new, LLVMLinkage::LLVMAppendingLinkage);
+        LLVMSetInitializer(
+            new,
+            LLVMConstArray2(element, kept.as_mut_ptr(), kept.len() as u64),
+        );
+        if let Some(section) = section {
+            LLVMSetSection(new, section.as_ptr());
+        }
+    }
+}
+
+// Descriptors are metadata roots only. Refuse any executable or global use
+// before erasing anything.
+fn remove(module: &Module<'_>) -> Result<(), String> {
+    // SAFETY: verified private clone with exclusive mutation. Descriptor globals
+    // are collected before deletion and each is detached from dead constants.
+    unsafe {
+        let raw = module.as_mut_ptr();
+        filter_used(raw, c"llvm.used");
+        filter_used(raw, c"llvm.compiler.used");
+        let mut descriptors = Vec::new();
+        let mut global = LLVMGetFirstGlobal(raw);
+        while !global.is_null() {
+            if is_descriptor(global) {
+                let mut use_ = LLVMGetFirstUse(global);
+                while !use_.is_null() {
+                    if !dead_constant(LLVMGetUser(use_)) {
+                        return Err("descriptor has non-metadata uses".into());
+                    }
+                    use_ = LLVMGetNextUse(use_);
+                }
+                descriptors.push(global);
+            }
+            global = LLVMGetNextGlobal(global);
+        }
+        for global in descriptors {
+            // The C API cannot destroy dead constants, so point them elsewhere.
+            LLVMReplaceAllUsesWith(global, LLVMConstNull(LLVMTypeOf(global)));
+            LLVMDeleteGlobal(global);
+        }
+    }
+    Ok(())
 }

@@ -93,6 +93,8 @@ mod memory;
 
 mod parity;
 
+mod phi_constants;
+
 mod pointer_provenance;
 
 mod volatile_copies;
