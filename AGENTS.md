@@ -1,5 +1,12 @@
 # The rewrite
 
+**v2 is a GPU dialect of Rust.** Kernels are written for the GPU. Compiling
+arbitrary crates (crypto-bigint, for example) is not a goal: that is a CPU-to-GPU
+port, and it is the goal that sank `master`. The compiler's job is to make GPU
+code correct and to tell the author precisely, at build time, what is not
+allowed. When `verify` refuses what an existing crate does, the kernel is
+rewritten; "make crate X build" is out of scope.
+
 This branch started from an empty tree. The compiler on `master` is a failed
 design: it accepts arbitrary Rust and repairs the IR until Apple takes it, so
 whether a kernel builds depends on what the optimizer happened to do. `master`
