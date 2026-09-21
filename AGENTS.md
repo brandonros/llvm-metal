@@ -1,3 +1,53 @@
+# Read this first: the rewrite (`v2/`)
+
+The compiler under `crates/compiler` is a failed design, kept only so the
+workload keeps running. It accepts arbitrary Rust and repairs the IR until Apple
+takes it, so whether a kernel builds depends on what the optimizer happened to
+do. Do not extend it. New work goes in `v2/`, under the rules below. They are
+tripwires, not values: when one trips, stop and report; do not reason past it.
+
+## Invariants
+
+1. **Acceptance never depends on optimization.** `verify` decides, before any
+   pass runs. If an opt level, attribute or pass order changes whether a kernel
+   builds or what it computes, that is a bug in the design, not something to tune.
+2. **Device memory is touched only through the buffer intrinsics.** Every other
+   pointer is thread memory by construction. No address-space inference, no
+   pointer provenance, no specialization by analysis.
+3. **Every refusal is a `Rule`:** one enum variant, with a doc comment that is the
+   spec, one test, and the Rust source location in the message.
+4. **`lower` is a fixed list of rewrites.** Each runs once, is deterministic and
+   states its pre- and postcondition. No retries, no fixpoints over refusals, no
+   thresholds, no policies.
+5. **The host build of the same kernel source is the reference.** Every GPU test
+   is differential against it.
+
+## Stop and report; do not code around it
+
+- `verify` refuses a kernel. The workload changes or the spec changes, and the
+  user decides which. Never add a lowering in the same session.
+- Host and GPU disagree. Reduce it. Do not change flags, attributes or pass order
+  until the cause is known.
+- The fix you are about to write is keyed on an opcode, a symbol name, a bit
+  width or an instruction count.
+- You are about to add a CLI flag, a mode, a policy or a fallback.
+- You are about to make something pass by making it optional.
+- A file in `v2/` passes 400 lines, or `verify` + `lower` together pass 1,200.
+  Size is the alarm for accumulated special cases.
+- The task has become a different task. One session, one issue, one scope.
+- A spike question comes back "no". The design is wrong; say so.
+
+## Before writing code
+
+- State what is wrong with the approach and whether you would build it this way
+  from scratch. Do this first, unasked.
+- A design change is a change to the invariants or to a `Rule`'s doc comment,
+  agreed with the user, before the code that needs it.
+- Done means: invariants hold, the diff is as small as it can be, and the report
+  lists what was not run. Passing tests are necessary, not the goal.
+- Never describe defensive code as rigor. Say what it guards and what evidence
+  says the guard is needed; if there is none, delete it.
+
 # Development
 
 - Use the development shell selected by `flake.lock`: `nix develop --command`.
