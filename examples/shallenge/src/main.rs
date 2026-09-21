@@ -1,24 +1,37 @@
-use shallenge_kernel::{PREFIX, Request};
-
+//! Hashes per second, and the best nonce of one launch.
 fn main() -> Result<(), String> {
-    let name = b"llvm-metal/";
-    let mut prefix = [0; PREFIX];
-    prefix[..name.len()].copy_from_slice(name);
-    let request = Request {
-        seed: 1,
-        prefix_length: name.len() as u64,
-        prefix,
-    };
-    let directory = shallenge::root().join("../../target/examples/shallenge");
-    let best = shallenge::on_gpu(&request, 1 << 16, &directory, |records| {
-        records.iter().min_by_key(|record| record.hash).copied()
-    })?
-    .ok_or("no threads")?;
-    let hash: String = best.hash.iter().map(|byte| format!("{byte:02x}")).collect();
+    let mut arguments = std::env::args().skip(1).map(|a| a.parse::<usize>());
+    let threads = arguments
+        .next()
+        .unwrap_or(Ok(1 << 16))
+        .map_err(|_| "usage: shallenge [threads] [attempts]")?;
+    let attempts = arguments
+        .next()
+        .unwrap_or(Ok(1 << 10))
+        .map_err(|_| "usage: shallenge [threads] [attempts]")?;
+    let prefix = b"llvm-metal/";
+    let request = shallenge::request(prefix, 0, 1, attempts as u32);
+    let directory = shallenge::root().join("../../target/examples/shallenge/bench");
+    let mut gpu = shallenge::Gpu::compile(&directory, threads)?;
+
+    gpu.request.write(|slot| slot[0] = request);
+    gpu.search(1)?; // warm up
+    let kernel = gpu.search(threads)?;
+    let hashes = (threads * attempts) as f64;
     println!(
-        "{}{}  {hash}",
-        String::from_utf8_lossy(name),
-        String::from_utf8_lossy(&best.nonce)
+        "GPU  threads={threads} attempts={attempts}  kernel {kernel:.2?}, {:.1}M hashes/s",
+        hashes / kernel.as_secs_f64() / 1e6
     );
-    Ok(())
+
+    let best = (gpu.records)
+        .read(|records| records.iter().min_by_key(|record| record.hash).copied())
+        .ok_or("no threads")?;
+    let mut text = prefix.to_vec();
+    text.extend(shallenge::nonce(&request, &best));
+    let hash: String = best.hash.iter().map(|word| format!("{word:08x}")).collect();
+    println!("{}  {hash}", String::from_utf8_lossy(&text));
+    match shallenge::sha256::digest(&text) == best.hash.map(u32::to_be_bytes).concat()[..] {
+        true => Ok(()),
+        false => Err("the host's SHA-256 disagrees".into()),
+    }
 }

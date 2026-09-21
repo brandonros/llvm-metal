@@ -1,4 +1,5 @@
-//! SHA-256 (FIPS 180-4) of a message shorter than 2^32 bytes.
+//! A general SHA-256 (FIPS 180-4), for the host only: the independent check of
+//! the hashes the kernel reports. Nothing here is shared with the kernel.
 const INITIAL: [u32; 8] = [
     0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
 ];
