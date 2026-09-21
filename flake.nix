@@ -9,18 +9,18 @@
     flake = false;
   };
 
-  outputs = { self, nixpkgs, rust-overlay, llvm-downgrade, ... }:
+  outputs = { nixpkgs, rust-overlay, llvm-downgrade, ... }:
     let
       systems = [ "aarch64-darwin" "x86_64-darwin" "aarch64-linux" "x86_64-linux" ];
-      forEachSystem = nixpkgs.lib.genAttrs systems;
-      # Everything that depends on the system, shared by the shells and the package.
-      perSystem = forEachSystem (system:
+    in {
+      devShells = nixpkgs.lib.genAttrs systems (system:
         let
           pkgs = import nixpkgs {
             inherit system;
             overlays = [ rust-overlay.overlays.default ];
           };
           llvm = pkgs.llvmPackages_22.llvm;
+          # Apple's compiler accepts only LLVM 14-encoded bitcode.
           downgrade = pkgs.stdenv.mkDerivation {
             pname = "llvm-downgrade";
             version = "09c2e50";
@@ -33,34 +33,14 @@
               "-DLLVMDG_BUILD_TESTS=OFF"
             ];
           };
-          # Official stable distribution: its LLVM must match `llvm` above, and
-          # its NVPTX target produces the test kernels' bitcode.
+          # Official stable distribution: its LLVM must match `llvm` above.
           toolchain = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
-          # What a consumer needs: the compiler with its LLVM and llvm-downgrade.
-          # The consumer supplies only the Rust toolchain that produces bitcode.
-          llvm-metalc = pkgs.rustPlatform.buildRustPackage {
-            pname = "llvm-metalc";
-            version = "0.1.0";
-            src = self;
-            cargoLock.lockFile = ./Cargo.lock;
-            cargoBuildFlags = [ "-p" "llvm-metal-compiler" "--bin" "llvm-metalc" ];
-            doCheck = false;
-            nativeBuildInputs = [ pkgs.makeWrapper ];
-            buildInputs = [ llvm pkgs.libffi ];
-            LLVM_SYS_221_PREFIX = "${llvm.dev}";
-            postInstall = "wrapProgram $out/bin/llvm-metalc --prefix PATH : ${downgrade}/bin";
-          };
-          shell = pkgs.mkShell {
+        in {
+          default = pkgs.mkShell {
             packages = [ toolchain llvm downgrade ];
             buildInputs = [ pkgs.libffi ];
             LLVM_SYS_221_PREFIX = "${llvm.dev}";
           };
-        in {
-          packages = { inherit llvm-metalc; default = llvm-metalc; };
-          devShells.default = shell;
         });
-    in {
-      packages = builtins.mapAttrs (_: outputs: outputs.packages) perSystem;
-      devShells = builtins.mapAttrs (_: outputs: outputs.devShells) perSystem;
     };
 }
