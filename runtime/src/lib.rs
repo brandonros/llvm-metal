@@ -76,26 +76,35 @@ pub fn launch(
     Ok(())
 }
 
-/// Launch a compiled kernel over its own `buffers`, binding after them what
-/// every kernel receives: the buffers' lengths and the status word. Fails if
-/// any thread panicked, and then the buffers hold nothing meaningful.
+/// Launch a compiled kernel over its own `buffers`. `slots` is how many the
+/// kernel names (the compiler reports it); after those come what every kernel
+/// receives, the lengths of its buffers and the status word. Fails if any
+/// thread panicked, and then the buffers hold nothing meaningful.
 pub fn run(
     library: &Path,
     entry: &str,
     threads: usize,
-    buffers: &mut Vec<Vec<u8>>,
+    slots: usize,
+    buffers: &mut [Vec<u8>],
 ) -> Result<(), String> {
-    let own = buffers.len();
-    let lengths = buffers
+    if buffers.len() < slots {
+        return Err(format!(
+            "the kernel names {slots} buffers; {} given",
+            buffers.len()
+        ));
+    }
+    let mut bound = buffers[..slots].to_vec();
+    let lengths = bound
         .iter()
         .flat_map(|buffer| (buffer.len() as u64).to_le_bytes())
         .collect();
-    buffers.extend([lengths, 0u32.to_le_bytes().to_vec()]);
-    let result = launch(library, entry, threads, buffers);
-    let status = buffers.split_off(own).pop();
-    result?;
-    match status.as_deref() {
-        Some([0, 0, 0, 0]) => Ok(()),
-        _ => Err("a thread panicked".into()),
+    bound.extend([lengths, 0u32.to_le_bytes().to_vec()]);
+    launch(library, entry, threads, &mut bound)?;
+    if bound[slots + 1] != [0; 4] {
+        return Err("a thread panicked".into());
     }
+    for (buffer, result) in buffers.iter_mut().zip(bound.into_iter().take(slots)) {
+        *buffer = result;
+    }
+    Ok(())
 }

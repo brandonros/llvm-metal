@@ -78,8 +78,17 @@ pub fn compile(
     directory: &std::path::Path,
 ) -> Result<Compiled, Error> {
     let bitcode = cargo::bitcode(manifest, &directory.join("cargo")).map_err(Error::Input)?;
+    compile_bitcode(&bitcode, name, directory)
+}
+
+/// Compile the kernel `name` from the bitcode of its crates into `directory`.
+pub fn compile_bitcode(
+    bitcode: &[Vec<u8>],
+    name: &str,
+    directory: &std::path::Path,
+) -> Result<Compiled, Error> {
     let context = Context::create();
-    let module = program(&context, &bitcode, name)?;
+    let module = program(&context, bitcode, name)?;
     let symbol = CString::new(format!("kernel.{name}")).expect("checked by `program`");
     // SAFETY: as in `program`; `verify` accepted the module.
     let bindings = unsafe {

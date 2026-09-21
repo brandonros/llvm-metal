@@ -23,6 +23,12 @@ pub fn on_gpu(request: &Request, threads: usize, directory: &Path) -> Result<Vec
     let compiled = llvm_metal_compiler::compile(&manifest, "shallenge", directory)
         .map_err(|error| format!("{error:#?}"))?;
     let mut buffers = buffers(request, threads);
-    llvm_metal_runtime::run(&compiled.library, "shallenge", threads, &mut buffers)?;
+    llvm_metal_runtime::run(
+        &compiled.library,
+        "shallenge",
+        threads,
+        compiled.bindings.buffers,
+        &mut buffers,
+    )?;
     Ok(host::values(&buffers[1]))
 }
