@@ -22,13 +22,15 @@ pub enum Rule {
     /// Integers are at most 64 bits wide. There is no i128 on the GPU: use two
     /// words, or 32-bit limbs with 64-bit products.
     NativeInteger,
-    /// Pointers and integers do not convert into each other. A pointer's
-    /// address space is part of its type on the GPU and an integer has none.
-    NoPointerCast,
-    /// Globals are constants holding plain data: no pointers, no functions. A
-    /// constant is copied to thread memory, where a stored address would be
-    /// wrong. Mutable statics have no meaning across GPU threads.
-    PlainConstant,
+    /// No integer becomes a pointer. A pointer's address space is part of its
+    /// type on the GPU, and an integer has none to give it. The other direction
+    /// is fine, and Rust needs it: a slice's length is the difference of two
+    /// addresses (`tests/target_facts.rs`).
+    NoIntegerToPointer,
+    /// Globals are constants. One may hold the address of another, which `lower`
+    /// relocates when it copies them to thread memory; never the address of a
+    /// function. Mutable statics have no meaning across GPU threads.
+    ConstantData,
 }
 
 /// Buffer slots a kernel may name. Metal binds 31; two carry the launch.
@@ -80,10 +82,10 @@ pub unsafe fn verify(module: LLVMModuleRef) -> Vec<Violation> {
             let initializer = LLVMGetInitializer(global);
             if LLVMIsGlobalConstant(global) == 0
                 || initializer.is_null()
-                || holds_pointer(LLVMTypeOf(initializer))
+                || !addresses_only_constants(initializer)
             {
                 violations.push(Violation {
-                    rule: Rule::PlainConstant,
+                    rule: Rule::ConstantData,
                     function: String::new(),
                     location: None,
                     detail: ir::name(global),
@@ -140,11 +142,8 @@ unsafe fn broken(instruction: Value) -> Option<(Rule, String)> {
             LLVMDisposeMessage(text);
             owned
         };
-        if matches!(
-            ir::opcode(instruction),
-            LLVMOpcode::LLVMPtrToInt | LLVMOpcode::LLVMIntToPtr
-        ) {
-            return Some((Rule::NoPointerCast, printed()));
+        if ir::opcode(instruction) == LLVMOpcode::LLVMIntToPtr {
+            return Some((Rule::NoIntegerToPointer, printed()));
         }
         let types = std::iter::once(LLVMTypeOf(instruction)).chain(
             ir::operands(instruction)
@@ -185,17 +184,19 @@ unsafe fn wide(ty: LLVMTypeRef) -> bool {
     }
 }
 
-unsafe fn holds_pointer(ty: LLVMTypeRef) -> bool {
+/// Every address inside a constant is null or leads to a global variable.
+unsafe fn addresses_only_constants(constant: Value) -> bool {
     unsafe {
-        match LLVMGetTypeKind(ty) {
-            LLVMTypeKind::LLVMPointerTypeKind => true,
-            LLVMTypeKind::LLVMArrayTypeKind | LLVMTypeKind::LLVMVectorTypeKind => {
-                holds_pointer(LLVMGetElementType(ty))
-            }
-            LLVMTypeKind::LLVMStructTypeKind => (0..LLVMCountStructElementTypes(ty))
-                .any(|field| holds_pointer(LLVMStructGetTypeAtIndex(ty, field))),
-            _ => false,
+        if !ir::is_pointer(LLVMTypeOf(constant)) {
+            return ir::operands(constant)
+                .into_iter()
+                .all(|part| addresses_only_constants(part));
         }
+        !LLVMIsAConstantPointerNull(constant).is_null()
+            || !LLVMIsAGlobalVariable(constant).is_null()
+            || (!LLVMIsAConstantExpr(constant).is_null()
+                && LLVMGetConstOpcode(constant) == LLVMOpcode::LLVMGetElementPtr
+                && addresses_only_constants(LLVMGetOperand(constant, 0)))
     }
 }
 
