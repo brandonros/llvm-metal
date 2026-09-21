@@ -242,7 +242,15 @@ fn build_unit(
     let (input, rest) = args
         .split_first()
         .ok_or("build-unit is internal to build")?;
-    let pairs = flags(rest, &["--descriptor", "--output", "--stage"])?;
+    let pairs = flags(
+        rest,
+        &["--descriptor", "--output", "--stage", "--force-inline"],
+    )?;
+    let force_inline: Vec<String> = pairs
+        .iter()
+        .filter(|(name, _)| name == "--force-inline")
+        .map(|(_, value)| value.to_string_lossy().into_owned())
+        .collect();
     let get = |flag: &str| {
         pairs
             .iter()
@@ -261,6 +269,7 @@ fn build_unit(
         descriptor: get("--descriptor")?,
         policy,
         panics,
+        force_inline: &force_inline,
         stage,
         output: get("--output")?,
     })

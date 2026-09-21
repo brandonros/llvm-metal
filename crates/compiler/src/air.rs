@@ -97,6 +97,24 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
         check_type(initializer.get_type(), &source, &destination)?;
     }
     for function in module.get_functions() {
+        // A refusal inside a helper names it, so the builder can inline it and retry.
+        validate_function(module, &source, &destination, function).map_err(|error| {
+            format!(
+                "{error}\nforce-inline: {}",
+                function.get_name().to_string_lossy()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn validate_function(
+    module: &Module<'_>,
+    source: &TargetData,
+    destination: &TargetData,
+    function: inkwell::values::FunctionValue<'_>,
+) -> Result<(), String> {
+    {
         let function_name = function.get_name().to_string_lossy();
         let context = module.get_context();
         let operation_type = match function_name.as_ref() {
@@ -119,7 +137,7 @@ fn validate_input(module: &Module<'_>) -> Result<(), String> {
                     "invalid device operation declaration: {function_name}"
                 ));
             }
-            continue;
+            return Ok(());
         }
         if function.get_call_conventions() != 0
             && (function.get_call_conventions() != 8 || function.count_basic_blocks() == 0)
@@ -437,6 +455,9 @@ pub fn legalize_with_policy<'ctx>(
     crate::volatile_copies::expand(&module);
     crate::libcalls::lower(&module)?;
     crate::wide_helpers::lower(&module)?;
+    // Before `wide`, so that i72..i120 become the i128 it lowers; after, for the
+    // narrow odd widths its own rewrites leave.
+    crate::odd::lower(&module)?;
     crate::wide::lower(&module)?;
     crate::odd::lower(&module)?;
     validate_input(&module)?;

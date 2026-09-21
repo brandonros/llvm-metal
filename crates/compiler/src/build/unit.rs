@@ -41,6 +41,8 @@ pub struct Unit<'a> {
     pub descriptor: &'a Path,
     pub policy: InliningPolicy,
     pub panics: Panics,
+    /// Helpers to inline regardless of policy; see `calls::prepare_forcing`.
+    pub force_inline: &'a [String],
     pub stage: Stage,
     pub output: &'a Path,
 }
@@ -96,7 +98,12 @@ pub fn run(unit: &Unit<'_>) -> Result<(), String> {
                 "globaldce,function(sroa,instcombine<no-verify-fixpoint>,simplifycfg,tailcallelim),globaldce,verify",
             )?;
             let module = reread(&contexts[1], &module)?;
-            let prepared = match crate::calls::prepare(&module, &descriptor.entry, policy) {
+            let prepared = match crate::calls::prepare_forcing(
+                &module,
+                &descriptor.entry,
+                policy,
+                unit.force_inline,
+            ) {
                 Ok(prepared) => prepared,
                 Err(error) => {
                     reject(&module, unit.output, "rejected-prepare");
