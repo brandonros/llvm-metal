@@ -48,5 +48,8 @@ fn attempt(request: &Request, thread: u32) -> Record {
     let mut message = [0; PREFIX + NONCE];
     message[..length].copy_from_slice(&request.prefix[..length]);
     message[length..length + NONCE].copy_from_slice(&nonce);
-    Record { hash: sha256::digest(&message[..length + NONCE]), nonce }
+    Record {
+        hash: sha256::digest(&message[..length + NONCE]),
+        nonce,
+    }
 }

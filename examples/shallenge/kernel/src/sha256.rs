@@ -57,7 +57,16 @@ fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
             .wrapping_add(schedule[i]);
         let second = (a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22))
             .wrapping_add((a & b) ^ (a & c) ^ (b & c));
-        (h, g, f, e, d, c, b, a) = (g, f, e, d.wrapping_add(first), c, b, a, first.wrapping_add(second));
+        (h, g, f, e, d, c, b, a) = (
+            g,
+            f,
+            e,
+            d.wrapping_add(first),
+            c,
+            b,
+            a,
+            first.wrapping_add(second),
+        );
     }
     for (word, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
         *word = word.wrapping_add(value);

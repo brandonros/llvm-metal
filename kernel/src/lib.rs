@@ -111,7 +111,11 @@ unsafe fn load<T: Plain, const SLOT: u32>(start: usize) -> T {
     let bytes = value.as_mut_ptr().cast::<u8>();
     for offset in 0..size_of::<T>() {
         // SAFETY: `offset` is inside `value`, and the caller checked the buffer.
-        unsafe { bytes.add(offset).write(device::load(SLOT, (start + offset) as u64)) };
+        unsafe {
+            bytes
+                .add(offset)
+                .write(device::load(SLOT, (start + offset) as u64))
+        };
     }
     // SAFETY: every byte was written, and any bit pattern is a `Plain` value.
     unsafe { value.assume_init() }

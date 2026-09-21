@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["kernel", "metallib", "examples/shallenge/kernel"]
+members = ["kernel", "compiler", "metallib", "examples/shallenge/kernel"]
 
 [profile.release]
 panic = "abort"
