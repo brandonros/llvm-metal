@@ -75,3 +75,27 @@ pub fn launch(
     }
     Ok(())
 }
+
+/// Launch a compiled kernel over its own `buffers`, binding after them what
+/// every kernel receives: the buffers' lengths and the status word. Fails if
+/// any thread panicked, and then the buffers hold nothing meaningful.
+pub fn run(
+    library: &Path,
+    entry: &str,
+    threads: usize,
+    buffers: &mut Vec<Vec<u8>>,
+) -> Result<(), String> {
+    let own = buffers.len();
+    let lengths = buffers
+        .iter()
+        .flat_map(|buffer| (buffer.len() as u64).to_le_bytes())
+        .collect();
+    buffers.extend([lengths, 0u32.to_le_bytes().to_vec()]);
+    let result = launch(library, entry, threads, buffers);
+    let status = buffers.split_off(own).pop();
+    result?;
+    match status.as_deref() {
+        Some([0, 0, 0, 0]) => Ok(()),
+        _ => Err("a thread panicked".into()),
+    }
+}

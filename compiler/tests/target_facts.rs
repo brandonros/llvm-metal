@@ -44,3 +44,33 @@ fn constant_memory_copies_to_thread_memory() {
 fn a_position_independence_level_is_harmless() {
     assert_eq!(probe("pic", 2), Ok(7));
 }
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn flags_announcing_stripped_debug_info_are_harmless() {
+    assert_eq!(probe("debug_flags", 21), Ok(42));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_noalias_scope_without_its_declaration_is_harmless() {
+    assert_eq!(probe("noalias_scope", 11), Ok(11));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn attributes_newer_than_the_encoding_are_harmless() {
+    assert_eq!(probe("modern_attributes", 11), Ok(11));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_copy_of_a_length_known_only_at_run_time_works() {
+    assert_eq!(probe("dynamic_copy", 8), Ok(8));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_large_constant_table_copies_to_thread_memory() {
+    assert_eq!(probe("large_constant", 50), Ok(150));
+}

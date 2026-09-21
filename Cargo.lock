@@ -339,6 +339,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "shallenge"
+version = "0.1.0"
+dependencies = [
+ "llvm-metal-compiler",
+ "llvm-metal-kernel",
+ "llvm-metal-runtime",
+ "shallenge-kernel",
+]
+
+[[package]]
 name = "shallenge-kernel"
 version = "0.1.0"
 dependencies = [

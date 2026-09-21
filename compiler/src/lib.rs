@@ -5,6 +5,8 @@
 //! 2. link the crates into one module.
 //! 3. `select`: give panics their device meaning; keep what the entry reaches.
 //! 4. `verify`: refuse what a GPU kernel may not contain. Nothing later refuses.
+//! 5. `lower`: make the launch explicit; constants to thread memory.
+//! 6. `emit`: describe the entry to Metal, encode, package.
 //!
 //! No LLVM optimization pass runs here. rustc optimized the code as the crate's
 //! profile asked, and Apple's compiler optimizes it again; whether a kernel
@@ -12,6 +14,7 @@
 pub mod cargo;
 pub mod emit;
 mod ir;
+pub mod lower;
 pub mod select;
 pub mod verify;
 
@@ -61,4 +64,31 @@ pub fn program<'ctx>(
     } else {
         Err(Error::Refused(violations))
     }
+}
+
+pub struct Compiled {
+    pub library: std::path::PathBuf,
+    pub bindings: lower::Bindings,
+}
+
+/// Build the crate at `manifest` and compile its kernel `name` into `directory`.
+pub fn compile(
+    manifest: &std::path::Path,
+    name: &str,
+    directory: &std::path::Path,
+) -> Result<Compiled, Error> {
+    let bitcode = cargo::bitcode(manifest, &directory.join("cargo")).map_err(Error::Input)?;
+    let context = Context::create();
+    let module = program(&context, &bitcode, name)?;
+    let symbol = CString::new(format!("kernel.{name}")).expect("checked by `program`");
+    // SAFETY: as in `program`; `verify` accepted the module.
+    let bindings = unsafe {
+        let raw = module.as_mut_ptr();
+        lower::lower(raw, LLVMGetNamedFunction(raw, symbol.as_ptr()), name)
+    };
+    module
+        .verify()
+        .map_err(|error| Error::Input(format!("lowered module: {error}")))?;
+    let library = emit::library(&module, name, directory).map_err(Error::Input)?;
+    Ok(Compiled { library, bindings })
 }

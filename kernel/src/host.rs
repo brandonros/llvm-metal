@@ -32,3 +32,18 @@ pub(crate) unsafe fn load(slot: u32, offset: u64) -> u8 {
 pub(crate) unsafe fn store(slot: u32, offset: u64, byte: u8) {
     BUFFERS.with_borrow_mut(|buffers| buffers[slot as usize][offset as usize] = byte);
 }
+
+/// The bytes of a value, as a buffer holds them.
+pub fn bytes<T: crate::Plain>(value: &T) -> Vec<u8> {
+    // SAFETY: `Plain` values have no padding, so every byte is initialized.
+    unsafe { std::slice::from_raw_parts((&raw const *value).cast::<u8>(), size_of::<T>()) }.to_vec()
+}
+
+/// The values a buffer holds.
+pub fn values<T: crate::Plain>(bytes: &[u8]) -> Vec<T> {
+    let chunks = bytes.chunks_exact(size_of::<T>());
+    // SAFETY: each chunk is `size_of::<T>()` bytes, and any bits are a `Plain`.
+    chunks
+        .map(|chunk| unsafe { chunk.as_ptr().cast::<T>().read_unaligned() })
+        .collect()
+}
