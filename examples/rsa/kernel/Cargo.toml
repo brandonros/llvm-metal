@@ -1,0 +1,7 @@
+[package]
+name = "rsa-kernel"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+llvm-metal-kernel = { path = "../../../kernel" }

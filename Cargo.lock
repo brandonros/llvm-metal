@@ -280,6 +280,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cab834c73d247e67f4fae452806d17d3c7501756d98c8808d7c9c7aa7d18f973"
 
 [[package]]
+name = "rsa"
+version = "0.1.0"
+dependencies = [
+ "llvm-metal-compiler",
+ "llvm-metal-kernel",
+ "llvm-metal-runtime",
+ "rsa-kernel",
+]
+
+[[package]]
+name = "rsa-kernel"
+version = "0.1.0"
+dependencies = [
+ "llvm-metal-kernel",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
