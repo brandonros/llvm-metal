@@ -8,3 +8,6 @@ ar = "0.9"
 inkwell = { version = "=0.10.0", default-features = false, features = ["llvm22-1-prefer-dynamic"] }
 llvm-metal-metallib = { path = "../metallib" }
 serde_json = "1"
+
+[dev-dependencies]
+llvm-metal-runtime = { path = "../runtime" }

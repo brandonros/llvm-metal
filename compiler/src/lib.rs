@@ -10,6 +10,7 @@
 //! profile asked, and Apple's compiler optimizes it again; whether a kernel
 //! builds cannot depend on either.
 pub mod cargo;
+pub mod emit;
 mod ir;
 pub mod select;
 pub mod verify;

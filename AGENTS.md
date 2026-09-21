@@ -59,7 +59,11 @@ list only with the evidence.
 
 - Apple's compiler accepts only LLVM 14-encoded bitcode (`llvm-downgrade`).
 - Metal pointers carry one of three address spaces: device, constant, thread.
-- No i128, no recursion, no indirect calls, no `ptrtoint`, no trap.
+- No i128, no recursion, no indirect calls, no trap.
+- `ptrtoint` on a thread pointer is accepted and correct, folded or not
+  (`compiler/tests/target_facts.rs`, M5, macOS 27). `master` refused it in its own
+  validator and never asked Apple: an inherited "fact" is a guess until a test
+  in that file shows it.
 - Kernels carrying `optsize`/`minsize` returned wrong answers on Apple M5.
 - PIC/PIE module flags crash Apple's pipeline compiler.
 - Pipeline compile time grows with code size and runs on one core per pipeline.
