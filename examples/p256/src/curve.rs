@@ -60,11 +60,11 @@ pub fn key(d: &Number) -> Key {
 }
 
 pub fn generator(key: &Key) -> Point {
-    [
-        key.p.enter(&number(GX)),
-        key.p.enter(&number(GY)),
-        key.p.one,
-    ]
+    Point {
+        x: key.p.enter(&number(GX)),
+        y: key.p.enter(&number(GY)),
+        z: key.p.one,
+    }
 }
 
 /// `scalar * point`, by double-and-add.
@@ -82,8 +82,8 @@ pub fn multiply(scalar: &Number, point: &Point, key: &Key) -> Point {
 /// The plain coordinates of a point, unless it is the identity.
 pub fn affine(point: &Point, key: &Key) -> Option<[Number; 2]> {
     let p = &key.p;
-    let inverse = p.invert(&point[2]);
-    (point[2] != [0; L]).then(|| [0, 1].map(|i| p.leave(&p.mul(&point[i], &inverse))))
+    let inverse = p.invert(&point.z);
+    (point.z != [0; L]).then(|| [&point.x, &point.y].map(|c| p.leave(&p.mul(c, &inverse))))
 }
 
 /// `table[i * MULTIPLES + w] = w * 16^i * G`.
@@ -103,7 +103,7 @@ pub fn table(key: &Key) -> Vec<Point> {
 }
 
 /// ECDSA verification: `x(z/s * G + r/s * Q) mod n == r`.
-pub fn verifies([r, s]: &Signature, z: &Number, public: &Point, key: &Key) -> bool {
+pub fn verifies(Signature { r, s }: &Signature, z: &Number, public: &Point, key: &Key) -> bool {
     let n = &key.n;
     let inverse = n.invert(&n.enter(s));
     let u1 = n.leave(&n.mul(&n.enter(z), &inverse));

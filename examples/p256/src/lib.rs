@@ -24,11 +24,9 @@ pub fn requests(count: usize) -> Vec<Request> {
         if j == 7 { 0 } else { (random >> 16) as u32 }
     };
     (0..count)
-        .map(|_| {
-            [
-                std::array::from_fn(&mut limb),
-                std::array::from_fn(&mut limb),
-            ]
+        .map(|_| Request {
+            z: std::array::from_fn(&mut limb),
+            k: std::array::from_fn(&mut limb),
         })
         .collect()
 }

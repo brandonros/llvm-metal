@@ -38,11 +38,26 @@ pub struct Key {
 // SAFETY: `repr(C)` and `u32` throughout, so no padding.
 unsafe impl Plain for Field {}
 unsafe impl Plain for Key {}
+unsafe impl Plain for Point {}
+unsafe impl Plain for Request {}
+unsafe impl Plain for Signature {}
 
-/// What one thread signs: the hashed message `z`, then the nonce `k`.
-pub type Request = [Number; 2];
-/// `r`, then `s`.
-pub type Signature = [Number; 2];
+/// What one thread signs.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct Request {
+    /// The hashed message.
+    pub z: Number,
+    /// The nonce.
+    pub k: Number,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Signature {
+    pub r: Number,
+    pub s: Number,
+}
 
 kernel! {
     pub fn sign(
@@ -54,7 +69,7 @@ kernel! {
     ) {
         let Some(key) = key.read() else { return };
         let index = thread.index() as usize;
-        let Some([z, k]) = requests.get(index) else { return };
+        let Some(Request { z, k }) = requests.get(index) else { return };
 
         // k*G = sum of table[i][k_i], where k_i is the i-th 4-bit digit of k and
         // table[i][w] = w * 16^i * G. The digit picks an address, never a path.
@@ -72,12 +87,12 @@ kernel! {
 #[inline(always)]
 fn finish(sum: &Point, z: &Number, k: &Number, key: &Key) -> Signature {
     let (p, n) = (&key.p, &key.n);
-    let x = p.leave(&p.mul(&sum[0], &p.invert(&sum[2])));
+    let x = p.leave(&p.mul(&sum.x, &p.invert(&sum.z)));
     // x < p < 2n, so one subtraction reduces it.
     let r = reduce(&x, 0, &n.modulus);
     let rd = n.mul(&n.enter(&r), &key.d);
     let s = n.mul(&n.invert(&n.enter(k)), &n.add(&n.enter(z), &rd));
-    [r, n.leave(&s)]
+    Signature { r, s: n.leave(&s) }
 }
 
 const _: () = assert!(L * 32 == 256 && WINDOWS * WINDOW == 256);

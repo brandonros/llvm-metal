@@ -2,6 +2,7 @@
 //! order), the host's signatures verify, and the GPU signs what the host signs
 //! however rustc was asked to optimize the kernel.
 use p256::curve::{self, number};
+use p256_kernel::{Request, Signature};
 
 // RFC 6979, A.2.5: P-256, SHA-256, message "sample".
 const D: &str = "c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721";
@@ -24,8 +25,21 @@ fn the_host_signs_the_rfc_6979_vector() {
     let key = curve::key(&number(D));
     let public = curve::multiply(&number(D), &curve::generator(&key), &key);
     assert_eq!(curve::affine(&public, &key), Some([number(QX), number(QY)]));
-    let signatures = p256::on_host(&key, &curve::table(&key), &[[number(Z), number(K)]]);
-    assert_eq!(signatures, [[number(R), number(S)]]);
+    let signatures = p256::on_host(
+        &key,
+        &curve::table(&key),
+        &[Request {
+            z: number(Z),
+            k: number(K),
+        }],
+    );
+    assert_eq!(
+        signatures,
+        [Signature {
+            r: number(R),
+            s: number(S)
+        }]
+    );
     assert!(curve::verifies(&signatures[0], &number(Z), &public, &key));
 }
 
@@ -37,7 +51,7 @@ fn gpu_matches_host_at_every_optimization_level() {
     let public = curve::multiply(&number(D), &curve::generator(&key), &key);
     let requests = p256::requests(100);
     let expected = p256::on_host(&key, &table, &requests);
-    for (signature, [z, _]) in expected.iter().zip(&requests) {
+    for (signature, Request { z, .. }) in expected.iter().zip(&requests) {
         assert!(
             curve::verifies(signature, z, &public, &key),
             "host signature rejected"

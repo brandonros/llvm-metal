@@ -2,18 +2,28 @@
 //! coordinate in Montgomery form. The identity is (0 : 1 : 0).
 use crate::field::{Field, Number};
 
-pub type Point = [Number; 3];
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Point {
+    pub x: Number,
+    pub y: Number,
+    pub z: Number,
+}
 
 pub fn identity(field: &Field) -> Point {
-    [[0; 8], field.one, [0; 8]]
+    Point {
+        x: [0; 8],
+        y: field.one,
+        z: [0; 8],
+    }
 }
 
 /// `p + q` by the complete formulas of Renes, Costello and Batina (2015), with
 /// a = -3. One code path covers addition, doubling and the identity, where the
 /// usual formulas branch on each. `b3` is 3b.
 pub fn add(p: &Point, q: &Point, b3: &Number, f: &Field) -> Point {
-    let [x1, y1, z1] = p;
-    let [x2, y2, z2] = q;
+    let (x1, y1, z1) = (&p.x, &p.y, &p.z);
+    let (x2, y2, z2) = (&q.x, &q.y, &q.z);
     let (xx, yy, zz) = (f.mul(x1, x2), f.mul(y1, y2), f.mul(z1, z2));
     // The cross terms: (x1 + y1)(x2 + y2) - xx - yy = x1 y2 + x2 y1, and so on.
     let cross = |a1, b1, a2, b2, aa, bb| {
@@ -30,9 +40,9 @@ pub fn add(p: &Point, q: &Point, b3: &Number, f: &Field) -> Point {
     let w = f.sub(&f.mul(b3, &xz), &f.add(&f.triple(&xx), &f.triple(&zz3)));
     let t = f.sub(&f.triple(&xx), &zz3);
     let (low, high) = (f.sub(&yy, &u), f.add(&yy, &u));
-    [
-        f.sub(&f.mul(&xy, &low), &f.mul(&yz, &w)),
-        f.add(&f.mul(&low, &high), &f.mul(&t, &w)),
-        f.add(&f.mul(&yz, &high), &f.mul(&xy, &t)),
-    ]
+    Point {
+        x: f.sub(&f.mul(&xy, &low), &f.mul(&yz, &w)),
+        y: f.add(&f.mul(&low, &high), &f.mul(&t, &w)),
+        z: f.add(&f.mul(&yz, &high), &f.mul(&xy, &t)),
+    }
 }

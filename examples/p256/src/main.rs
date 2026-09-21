@@ -35,7 +35,7 @@ fn main() -> Result<(), String> {
     );
 
     let bad = (signatures.iter().zip(sample))
-        .filter(|(signature, [z, _])| !curve::verifies(signature, z, &public, &key))
+        .filter(|(signature, request)| !curve::verifies(signature, &request.z, &public, &key))
         .count();
     println!(
         "public key rejected {bad} of the first {}; GPU matches host: {}",
