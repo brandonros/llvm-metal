@@ -41,12 +41,6 @@ fn constant_memory_copies_to_thread_memory() {
 
 #[test]
 #[ignore = "requires an Apple GPU"]
-fn a_position_independence_level_is_harmless() {
-    assert_eq!(probe("pic", 2), Ok(7));
-}
-
-#[test]
-#[ignore = "requires an Apple GPU"]
 fn flags_announcing_stripped_debug_info_are_harmless() {
     assert_eq!(probe("debug_flags", 21), Ok(42));
 }
@@ -73,4 +67,23 @@ fn a_copy_of_a_length_known_only_at_run_time_works() {
 #[ignore = "requires an Apple GPU"]
 fn a_large_constant_table_copies_to_thread_memory() {
     assert_eq!(probe("large_constant", 50), Ok(150));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_function_returns_a_small_struct_by_value() {
+    assert_eq!(probe("aggregate_return", 11), Ok(42));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_value_without_data_has_an_address() {
+    assert_eq!(probe("empty_alloca", 21), Ok(42));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_position_independent_module_runs_once_emit_clears_the_flag() {
+    // The kernel's body is empty, so the output keeps what the test put there.
+    assert_eq!(probe("pic_relocation", 0), Ok(0xa5a5_a5a5_a5a5_a5a5));
 }

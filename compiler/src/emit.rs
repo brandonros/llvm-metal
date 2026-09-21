@@ -23,6 +23,7 @@ pub fn library(
 ) -> Result<std::path::PathBuf, String> {
     module.set_triple(&TargetTriple::create(TRIPLE));
     module.set_data_layout(&TargetData::create(LAYOUT).get_data_layout());
+    clear_position_independence(module);
     describe(module, entry)?;
     module.verify().map_err(|error| error.to_string())?;
     fs::create_dir_all(directory).map_err(|error| error.to_string())?;
@@ -126,4 +127,31 @@ fn describe(module: &Module<'_>, entry: &str) -> Result<(), String> {
         context.metadata_node(&[text("Metal"), number(3), number(0), number(0)]),
     )?;
     Ok(())
+}
+
+/// rustc marks its modules position-independent, which means nothing on a GPU
+/// and can kill Apple's compiler (`tests/facts/pic_relocation.ll`). The C API
+/// cannot remove a module flag, so set the levels to zero: not independent.
+fn clear_position_independence(module: &Module<'_>) {
+    use inkwell::llvm_sys::core::*;
+    let flags = c"llvm.module.flags";
+    // SAFETY: the module is live and ours, and the verifier has checked that
+    // each flag is a node of three operands whose second is a string.
+    unsafe {
+        let raw = module.as_mut_ptr();
+        let count = LLVMGetNamedMetadataNumOperands(raw, flags.as_ptr());
+        let mut nodes = vec![std::ptr::null_mut(); count as usize];
+        LLVMGetNamedMetadataOperands(raw, flags.as_ptr(), nodes.as_mut_ptr());
+        for node in nodes {
+            let mut operands = [std::ptr::null_mut(); 3];
+            LLVMGetMDNodeOperands(node, operands.as_mut_ptr());
+            let mut length = 0;
+            let key = LLVMGetMDString(operands[1], &mut length);
+            let key = std::slice::from_raw_parts(key.cast::<u8>(), length as usize);
+            if key == b"PIC Level" || key == b"PIE Level" {
+                let zero = LLVMConstInt(LLVMInt32TypeInContext(LLVMGetModuleContext(raw)), 0, 0);
+                LLVMReplaceMDNodeOperandWith(node, 2, LLVMValueAsMetadata(zero));
+            }
+        }
+    }
 }

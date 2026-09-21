@@ -66,10 +66,11 @@ list only with the evidence.
   in that file shows it.
 - Kernels carrying `optsize`/`minsize` returned wrong answers on Apple M5.
 - `llvm.memcpy` from constant to thread memory is accepted (`target_facts.rs`).
-- UNCONFIRMED: `master` saw PIC/PIE module flags crash Apple's pipeline compiler
-  on two large kernels. A small module with both flags and a constant table
-  runs correctly (`target_facts.rs`), so nothing here strips them. If pipeline
-  creation ever crashes, test this first.
+- rustc's `PIC Level` module flag can kill Apple's compiler service: a null
+  dereference in a machine function pass, reported as
+  `XPC_ERROR_CONNECTION_INTERRUPTED`. Reproducer: `tests/facts/pic_relocation.ll`.
+  `emit` sets the level to zero. A compiler-service crash leaves a report in
+  `~/Library/Logs/DiagnosticReports/MTLCompilerService-*.ips`: read it first.
 - Pipeline compile time grows with code size and runs on one core per pipeline.
 - rustc's release LLVM must be the major this project links, and no newer.
 
