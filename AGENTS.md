@@ -2,14 +2,14 @@
 
 **v2 is a GPU dialect of Rust.** Kernels are written for the GPU. Compiling
 arbitrary crates (crypto-bigint, for example) is not a goal: that is a CPU-to-GPU
-port, and it is the goal that sank `master`. The compiler's job is to make GPU
+port, and it is the goal that sank the first compiler (tag `v1`). The compiler's job is to make GPU
 code correct and to tell the author precisely, at build time, what is not
 allowed. When `verify` refuses what an existing crate does, the kernel is
 rewritten; "make crate X build" is out of scope.
 
-This branch started from an empty tree. The compiler on `master` is a failed
+This compiler started from an empty tree. The first one (tag `v1`) is a failed
 design: it accepts arbitrary Rust and repairs the IR until Apple takes it, so
-whether a kernel builds depends on what the optimizer happened to do. `master`
+whether a kernel builds depends on what the optimizer happened to do. `v1`
 is evidence of what Apple's compiler requires, not a source of code. Anything
 brought over is copied in deliberately, in its own commit, with the reason it
 earns its place. Extract; never paste a file whole.
@@ -61,14 +61,14 @@ are tripwires, not values: when one trips, stop and report; do not reason past i
 
 ## Known facts about the target
 
-Each cost days to find on `master`. Verify before relying on one; add to the
+Each cost days to find on `v1`. Verify before relying on one; add to the
 list only with the evidence.
 
 - Apple's compiler accepts only LLVM 14-encoded bitcode (`llvm-downgrade`).
 - Metal pointers carry one of three address spaces: device, constant, thread.
 - No i128, no recursion, no indirect calls, no trap.
 - `ptrtoint` on a thread pointer is accepted and correct, folded or not
-  (`compiler/tests/target_facts.rs`, M5, macOS 27). `master` refused it in its own
+  (`compiler/tests/target_facts.rs`, M5, macOS 27). `v1` refused it in its own
   validator and never asked Apple: an inherited "fact" is a guess until a test
   in that file shows it.
 - Kernels carrying `optsize`/`minsize` returned wrong answers on Apple M5.

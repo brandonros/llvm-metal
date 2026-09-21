@@ -53,7 +53,7 @@ const OPERATIONS: [&str; 5] = [
     "llvm_metal.panic",
 ];
 
-/// Intrinsics Apple's compiler accepted on `master` (M5, macOS 27), and the
+/// Intrinsics Apple's compiler accepted on `v1` (M5, macOS 27), and the
 /// hints that carry no meaning and that `lower` drops.
 const INTRINSICS: [&str; 17] = [
     "llvm.experimental.noalias.scope.decl",
