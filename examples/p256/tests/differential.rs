@@ -43,13 +43,50 @@ fn the_host_signs_the_rfc_6979_vector() {
     assert!(curve::verifies(&signatures[0], &number(Z), &public, &key));
 }
 
+/// Inputs the single code path must absorb: k = 1 and k = 16 add the identity in
+/// 63 of 64 windows, k = n - 1 gives -G, and a hash of 2^256 - 1 is above n.
+fn edge_cases(key: &p256_kernel::Key) -> Vec<Request> {
+    let small = |k| {
+        let mut number = [0; 8];
+        number[0] = k;
+        number
+    };
+    let mut last = key.n.modulus;
+    last[0] -= 1;
+    let z = number(Z);
+    vec![
+        Request { z, k: small(1) },
+        Request { z, k: small(16) },
+        Request { z, k: last },
+        Request {
+            z: [u32::MAX; 8],
+            k: number(K),
+        },
+    ]
+}
+
+#[test]
+fn the_edge_cases_sign_and_verify() {
+    let key = curve::key(&number(D));
+    let public = curve::multiply(&number(D), &curve::generator(&key), &key);
+    let requests = edge_cases(&key);
+    let signatures = p256::on_host(&key, &curve::table(&key), &requests);
+    for (signature, request) in signatures.iter().zip(&requests) {
+        assert!(curve::verifies(signature, &request.z, &public, &key));
+    }
+    // G and -G share an x coordinate, and it is below n.
+    assert_eq!(signatures[0].r, number(curve::GX));
+    assert_eq!(signatures[2].r, number(curve::GX));
+}
+
 #[test]
 #[ignore = "requires an Apple GPU"]
 fn gpu_matches_host_at_every_optimization_level() {
     let key = curve::key(&number(D));
     let table = curve::table(&key);
     let public = curve::multiply(&number(D), &curve::generator(&key), &key);
-    let requests = p256::requests(100);
+    let mut requests = edge_cases(&key);
+    requests.extend(p256::requests(100));
     let expected = p256::on_host(&key, &table, &requests);
     for (signature, Request { z, .. }) in expected.iter().zip(&requests) {
         assert!(
