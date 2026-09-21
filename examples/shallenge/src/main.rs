@@ -1,4 +1,6 @@
 //! Hashes per second, and the best nonce of one launch.
+use std::hash::{BuildHasher, Hasher, RandomState};
+
 fn main() -> Result<(), String> {
     let mut arguments = std::env::args().skip(1).map(|a| a.parse::<usize>());
     let threads = arguments
@@ -10,7 +12,10 @@ fn main() -> Result<(), String> {
         .unwrap_or(Ok(1 << 10))
         .map_err(|_| "usage: shallenge [threads] [attempts]")?;
     let prefix = b"llvm-metal/";
-    let request = shallenge::request(prefix, 0, 1, attempts as u32);
+    // A random corner of the 96-bit nonce space for each launch, searched in
+    // order: launches do not repeat each other, and no thread needs an RNG.
+    let random = || RandomState::new().build_hasher().finish();
+    let request = shallenge::request(prefix, random(), random(), attempts as u32);
     let directory = shallenge::root().join("../../target/examples/shallenge/bench");
     let mut gpu = shallenge::Gpu::compile(&directory, threads)?;
 
