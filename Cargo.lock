@@ -256,6 +256,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "p256"
+version = "0.1.0"
+dependencies = [
+ "llvm-metal-compiler",
+ "llvm-metal-kernel",
+ "llvm-metal-runtime",
+ "p256-kernel",
+]
+
+[[package]]
+name = "p256-kernel"
+version = "0.1.0"
+dependencies = [
+ "llvm-metal-kernel",
+]
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -1,0 +1,10 @@
+[package]
+name = "p256"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+llvm-metal-compiler = { path = "../../compiler" }
+llvm-metal-kernel = { path = "../../kernel" }
+llvm-metal-runtime = { path = "../../runtime" }
+p256-kernel = { path = "kernel" }
