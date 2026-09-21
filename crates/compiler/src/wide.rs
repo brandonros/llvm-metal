@@ -370,6 +370,35 @@ impl Lower {
                     self.replace(gep, replacement);
                 }
             }
+            // A GEP only computes an address, and storage has the stride of the
+            // i128 it replaces, so retype the ones over memory declared as bytes.
+            let remaining: Vec<_> = instructions(self.module)
+                .into_iter()
+                .filter(|&i| {
+                    !LLVMIsAGetElementPtrInst(i).is_null() && {
+                        let element = LLVMGetGEPSourceElementType(i);
+                        (wide(element) || wide_array(element).is_some())
+                            && LLVMABISizeOfType(layout, element)
+                                == LLVMABISizeOfType(layout, self.storage_type(element))
+                    }
+                })
+                .collect();
+            for gep in remaining {
+                let builder = Builder::before(self.context, gep);
+                let mut indices: Vec<_> = (1..LLVMGetNumOperands(gep) as u32)
+                    .map(|i| LLVMGetOperand(gep, i))
+                    .collect();
+                let replacement = LLVMBuildGEP2(
+                    builder.0,
+                    self.storage_type(LLVMGetGEPSourceElementType(gep)),
+                    LLVMGetOperand(gep, 0),
+                    indices.as_mut_ptr(),
+                    indices.len() as u32,
+                    E,
+                );
+                LLVMGEPSetNoWrapFlags(replacement, LLVMGEPGetNoWrapFlags(gep));
+                self.replace(gep, replacement);
+            }
             true
         }
     }

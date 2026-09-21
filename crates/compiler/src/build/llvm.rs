@@ -229,3 +229,56 @@ pub fn undefined(module: &Module<'_>) -> Vec<String> {
             .collect()
     }
 }
+
+/// Treat every call to an undefined `noreturn` function, which is how Rust
+/// reports a panic, as unreachable: erase the call and leave the `unreachable`
+/// that follows it, so LLVM deletes the check that led there. This removes a
+/// safety check: a kernel that would have panicked has undefined behaviour.
+/// Returns the number of calls erased.
+pub fn assume_no_panics(module: &Module<'_>, keep: &[&str]) -> usize {
+    let mut erased = 0;
+    // SAFETY: every value comes from `module`; users are collected before any
+    // instruction is erased, and a function is deleted only without uses.
+    unsafe {
+        let kind = LLVMGetEnumAttributeKindForName(c"noreturn".as_ptr(), 8);
+        let mut functions = Vec::new();
+        let mut function = LLVMGetFirstFunction(module.as_mut_ptr());
+        while !function.is_null() {
+            functions.push(function);
+            function = LLVMGetNextFunction(function);
+        }
+        for function in functions {
+            let name = String::from_utf8_lossy(&name(function)).into_owned();
+            if LLVMIsDeclaration(function) == 0
+                || name.starts_with("llvm.")
+                || keep.contains(&name.as_str())
+                || LLVMGetEnumAttributeAtIndex(
+                    function,
+                    inkwell::llvm_sys::LLVMAttributeFunctionIndex,
+                    kind,
+                )
+                .is_null()
+            {
+                continue;
+            }
+            let mut calls = Vec::new();
+            let mut item = LLVMGetFirstUse(function);
+            while !item.is_null() {
+                let user = LLVMGetUser(item);
+                if !LLVMIsACallInst(user).is_null() && LLVMGetCalledValue(user) == function {
+                    calls.push(user);
+                }
+                item = LLVMGetNextUse(item);
+            }
+            for call in calls {
+                LLVMReplaceAllUsesWith(call, LLVMGetPoison(LLVMTypeOf(call)));
+                LLVMInstructionEraseFromParent(call);
+                erased += 1;
+            }
+            if LLVMGetFirstUse(function).is_null() {
+                LLVMDeleteFunction(function);
+            }
+        }
+    }
+    erased
+}

@@ -62,7 +62,12 @@ fn cleanup_bounds_bech32_analysis_and_preserves_writes() {
     // O3 directly on these loops spends minutes in ScalarEvolution; the
     // builder's ordering exists to avoid that, so a regression shows as time.
     let start = Instant::now();
-    let optimized = post_inline(parse_ir(&context, &source, "bech32").unwrap(), &reread).unwrap();
+    let optimized = post_inline(
+        parse_ir(&context, &source, "bech32").unwrap(),
+        &reread,
+        llvm_metal_compiler::air::InliningPolicy::Selective,
+    )
+    .unwrap();
     assert!(start.elapsed().as_secs() < 10, "{:?}", start.elapsed());
     check_writes(optimized);
 }

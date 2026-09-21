@@ -51,6 +51,7 @@ pub struct Build {
     pub input: Input,
     pub output: PathBuf,
     pub policy: InliningPolicy,
+    pub panics: unit::Panics,
     /// A group: `{"kernel": <entry>, "cases": [{"name", "entry", ...}]}`. Each
     /// case is built into `cases/<name>` and recorded in `kernel.group.json`.
     pub cases: Option<PathBuf>,
@@ -371,6 +372,33 @@ fn cases(
 }
 
 fn worker(build: &Build, stage: unit::Stage, input: &Path, directory: &Path) -> Result<(), String> {
+    // A helper that cannot stay a call is known only once lowering has tried:
+    // inline it and start the entry again. Each retry names a new helper.
+    let mut forced: Vec<String> = Vec::new();
+    loop {
+        let error = match attempt(build, stage, input, directory, &forced) {
+            Ok(()) => return Ok(()),
+            Err(error) => error,
+        };
+        match error
+            .lines()
+            .find_map(|line| line.strip_prefix("force-inline: "))
+        {
+            Some(helper) if !forced.iter().any(|name| name == helper) && forced.len() < 64 => {
+                forced.push(helper.to_owned());
+            }
+            _ => return Err(error),
+        }
+    }
+}
+
+fn attempt(
+    build: &Build,
+    stage: unit::Stage,
+    input: &Path,
+    directory: &Path,
+    forced: &[String],
+) -> Result<(), String> {
     let output = Command::new(&build.program)
         .arg("build-unit")
         .arg(input)
@@ -379,6 +407,18 @@ fn worker(build: &Build, stage: unit::Stage, input: &Path, directory: &Path) -> 
         .arg("--output")
         .arg(directory)
         .args(["--inlining", policy_name(build.policy)])
+        .args(
+            forced
+                .iter()
+                .flat_map(|name| ["--force-inline", name.as_str()]),
+        )
+        .args([
+            "--panics",
+            match build.panics {
+                unit::Panics::Refuse => "refuse",
+                unit::Panics::Unreachable => "unreachable",
+            },
+        ])
         .args([
             "--stage",
             match stage {
@@ -400,6 +440,7 @@ pub fn policy_name(policy: InliningPolicy) -> &'static str {
         InliningPolicy::All => "all",
         InliningPolicy::RetainScalar => "retain-scalar",
         InliningPolicy::Selective => "selective",
+        InliningPolicy::Llvm => "llvm",
     }
 }
 

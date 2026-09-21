@@ -377,3 +377,35 @@ fn prepared_buffers_reuse_storage_and_reject_changed_shapes() {
     assert!(unsafe { prepared.run(&mut buffers, 2, 1) }.is_err());
     assert!(unsafe { prepared.run(&mut buffers, 1, 0) }.is_err());
 }
+
+#[test]
+#[ignore = "requires Apple GPU and the Nix shell"]
+fn local_bytes_read_back_as_a_word_execute_on_metal() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let directory = root.join("target/metal-tests/punned-local");
+    fs::create_dir_all(&directory).unwrap();
+    let context = inkwell::context::Context::create();
+    let source = fs::read(root.join("tests/fixtures/gpu/punned-local.ll")).unwrap();
+    let module = llvm_metal_compiler::parse_ir(&context, &source, "punned").unwrap();
+    let compiled =
+        llvm_metal_compiler::compile::compile(&module, &buffer_interface("punned", 8, 1)).unwrap();
+    fs::write(directory.join("kernel.air.ll"), &compiled.air_ir).unwrap();
+    let library = directory.join("kernel.metallib");
+    fs::write(&library, compiled.metallib).unwrap();
+    let kernel = Kernel::load(&library, &compiled.bindings).unwrap();
+    let input = vec![1, 2, 3, 4, 5, 6, 7, 8];
+    let mut buffers = [
+        Buffer {
+            bytes: input.clone(),
+            offset: 0,
+        },
+        Buffer {
+            bytes: vec![0xa5; 8],
+            offset: 0,
+        },
+    ];
+    unsafe {
+        kernel.run(&mut buffers, 1, 1).unwrap();
+    }
+    assert_eq!(buffers[1].bytes, input);
+}

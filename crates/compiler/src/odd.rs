@@ -2,7 +2,8 @@
 //! Call only on a disposable, verified module clone. No ABI changes are allowed.
 //!
 //! i2..i7 are register-only and promote to i32; their storage is refused.
-//! i24 -> i32; i40/i48/i56 -> i64. Every promoted value is zero-extended from
+//! i24 -> i32; i40/i48/i56 -> i64; i72..i120 -> i128, which `wide` then lowers.
+//! SROA makes those when it splits a stored i128 across two byte buffers. Every promoted value is zero-extended from
 //! its original width. Signed operations explicitly sign-extend that width.
 use inkwell::{
     llvm_sys::{
@@ -63,7 +64,9 @@ unsafe fn width(ty: LLVMTypeRef) -> Option<u32> {
     }
 }
 unsafe fn odd(ty: LLVMTypeRef) -> bool {
-    unsafe { width(ty) }.is_some_and(|w| (2..=7).contains(&w) || matches!(w, 24 | 40 | 48 | 56))
+    unsafe { width(ty) }.is_some_and(|w| {
+        (2..=7).contains(&w) || matches!(w, 24 | 40 | 48 | 56) || (w > 64 && w < 128 && w % 8 == 0)
+    })
 }
 unsafe fn contains_odd(ty: LLVMTypeRef) -> bool {
     unsafe {
@@ -82,7 +85,7 @@ unsafe fn contains_odd(ty: LLVMTypeRef) -> bool {
     }
 }
 unsafe fn ordinary_integer(ty: LLVMTypeRef) -> bool {
-    unsafe { width(ty) }.is_some_and(|w| matches!(w, 1 | 8 | 16 | 32 | 64))
+    unsafe { width(ty) }.is_some_and(|w| matches!(w, 1 | 8 | 16 | 32 | 64 | 128))
 }
 unsafe fn atomic(access: LLVMValueRef) -> bool {
     unsafe { LLVMGetOrdering(access) != LLVMAtomicOrdering::LLVMAtomicOrderingNotAtomic }
@@ -111,16 +114,21 @@ impl Lower {
     }
     unsafe fn promoted(&self, ty: LLVMTypeRef) -> LLVMTypeRef {
         unsafe {
-            if LLVMGetIntTypeWidth(ty) <= 24 {
-                LLVMInt32TypeInContext(self.context)
-            } else {
-                LLVMInt64TypeInContext(self.context)
+            match LLVMGetIntTypeWidth(ty) {
+                ..=24 => LLVMInt32TypeInContext(self.context),
+                ..=64 => LLVMInt64TypeInContext(self.context),
+                _ => LLVMInt128TypeInContext(self.context),
             }
         }
     }
     unsafe fn mask(&self, builder: &Builder, value: LLVMValueRef, width: u32) -> LLVMValueRef {
         unsafe {
-            let low = LLVMConstInt(LLVMTypeOf(value), (1u64 << width) - 1, 0);
+            let low = if width > 64 {
+                let words = [u64::MAX, (1u64 << (width - 64)) - 1];
+                LLVMConstIntOfArbitraryPrecision(LLVMTypeOf(value), 2, words.as_ptr())
+            } else {
+                LLVMConstInt(LLVMTypeOf(value), (1u64 << width) - 1, 0)
+            };
             LLVMBuildAnd(builder.0, value, low, c"odd.mask".as_ptr())
         }
     }
@@ -181,6 +189,10 @@ impl Lower {
             let width = LLVMGetIntTypeWidth(original);
             let ty = self.promoted(original);
             if !LLVMIsAConstantInt(value).is_null() {
+                if width > 64 {
+                    // The C API reads at most 64 bits of a constant.
+                    return self.fail(value, "constant wider than 64 bits");
+                }
                 return Some(LLVMConstInt(ty, LLVMConstIntGetZExtValue(value), 0));
             }
             if !LLVMIsAPoisonValue(value).is_null() {
@@ -247,7 +259,33 @@ impl Lower {
             } else if opcode == LLVMOpcode::LLVMFreeze {
                 let input = self.get(LLVMGetOperand(value, 0))?;
                 result = self.mask(&builder, LLVMBuildFreeze(b, input, c"".as_ptr()), width);
+            } else if width > 64
+                && matches!(opcode, LLVMOpcode::LLVMShl | LLVMOpcode::LLVMLShr)
+                && !LLVMIsAConstantInt(LLVMGetOperand(value, 1)).is_null()
+                && LLVMConstIntGetZExtValue(LLVMGetOperand(value, 1)) < u64::from(width)
+            {
+                // A constant in-range shift, which is all `wide` lowers on i128.
+                let left = self.get(LLVMGetOperand(value, 0))?;
+                let count = LLVMConstInt(ty, LLVMConstIntGetZExtValue(LLVMGetOperand(value, 1)), 0);
+                result = if opcode == LLVMOpcode::LLVMShl {
+                    LLVMBuildShl(b, left, count, c"".as_ptr())
+                } else {
+                    LLVMBuildLShr(b, left, count, c"".as_ptr())
+                };
+                result = self.mask(&builder, result, width);
             } else if !LLVMIsABinaryOperator(value).is_null() {
+                if width > 64
+                    && !matches!(
+                        opcode,
+                        LLVMOpcode::LLVMAdd
+                            | LLVMOpcode::LLVMSub
+                            | LLVMOpcode::LLVMAnd
+                            | LLVMOpcode::LLVMOr
+                            | LLVMOpcode::LLVMXor
+                    )
+                {
+                    return self.fail(value, UNSUPPORTED);
+                }
                 let left = self.get(LLVMGetOperand(value, 0))?;
                 let right = self.get(LLVMGetOperand(value, 1))?;
                 result = match opcode {
@@ -341,7 +379,11 @@ impl Lower {
             if width < 8 {
                 return true; // Register-only: no storage layout is changed.
             }
-            let allocation = if width == 24 { 4 } else { 8 };
+            let allocation = match width {
+                24 => 4,
+                ..=64 => 8,
+                _ => 16,
+            };
             if LLVMByteOrder(layout) != LLVMByteOrdering::LLVMLittleEndian
                 || LLVMABISizeOfType(layout, ty) != allocation
                 || u64::from(LLVMABIAlignmentOfType(layout, ty)) != allocation

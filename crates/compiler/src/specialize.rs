@@ -231,9 +231,10 @@ unsafe fn specialize(
                     if pointer(value) {
                         value = concrete(value, builder).ok_or_else(|| {
                             format!(
-                                "unresolved pointer flow at retained helper call in {}: {}",
+                                "unresolved pointer flow at retained helper call in {}: {}\nforce-inline: {}",
                                 name(caller),
-                                printed(call)
+                                printed(call),
+                                name(callee).split(".metal.").next().unwrap_or_default()
                             )
                         })?;
                         spaces.push(space(value));

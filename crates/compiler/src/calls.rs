@@ -101,7 +101,9 @@ fn supported_signature(f: FunctionValue<'_>, policy: InliningPolicy) -> bool {
         && matches!(f.get_call_conventions(), 0 | 8)
         && f.get_type().get_return_type().is_none_or(scalar)
         && f.get_param_iter().all(|p| {
-            scalar(p.get_type()) || (policy == InliningPolicy::Selective && p.is_pointer_value())
+            scalar(p.get_type())
+                || (matches!(policy, InliningPolicy::Selective | InliningPolicy::Llvm)
+                    && p.is_pointer_value())
         })
 }
 // Constant initializers expose state fields (lengths, domains, tags) which
@@ -173,16 +175,17 @@ pub(crate) fn retained(
     entry: &str,
     policy: InliningPolicy,
 ) -> Result<HashSet<String>, String> {
-    select(module, entry, policy, true)
+    select(module, entry, policy, true).map(|(kept, _)| kept)
 }
+/// The helpers that may stay calls, and the ones that must be inlined.
 fn select(
     module: &Module<'_>,
     entry: &str,
     policy: InliningPolicy,
     final_input: bool,
-) -> Result<HashSet<String>, String> {
+) -> Result<(HashSet<String>, HashSet<String>), String> {
     if policy == InliningPolicy::All {
-        return Ok(HashSet::new());
+        return Ok((HashSet::new(), HashSet::new()));
     }
     validate_calls(module, final_input)?;
     // Propagate required inlining to callers: thread-index use needs the entry,
@@ -223,7 +226,27 @@ fn select(
                         _ => false,
                     }
                 });
-            if unsupported_external || indirect || pointer_memory {
+            // i128 storage is retyped per allocation, which cannot follow a pointer
+            // into another function: whoever reads or writes i128 memory joins
+            // the function that owns it.
+            let wide_memory = f
+                .get_basic_blocks()
+                .iter()
+                .flat_map(|b| b.get_instructions())
+                .any(|i| unsafe {
+                    use inkwell::llvm_sys::core::*;
+                    let value = i.as_value_ref();
+                    let ty = if !LLVMIsALoadInst(value).is_null() {
+                        LLVMTypeOf(value)
+                    } else if !LLVMIsAStoreInst(value).is_null() {
+                        LLVMTypeOf(LLVMGetOperand(value, 0))
+                    } else {
+                        return false;
+                    };
+                    LLVMGetTypeKind(ty) == inkwell::llvm_sys::LLVMTypeKind::LLVMIntegerTypeKind
+                        && LLVMGetIntTypeWidth(ty) > 64
+                });
+            if unsupported_external || indirect || pointer_memory || wide_memory {
                 required.insert(name);
             }
         }
@@ -250,7 +273,7 @@ fn select(
             break;
         }
     }
-    Ok(module
+    let kept = module
         .get_functions()
         .filter(|f| {
             f.count_basic_blocks() != 0
@@ -262,7 +285,7 @@ fn select(
                 && matches!(f.get_linkage(), Linkage::Internal | Linkage::Private)
                 && !crate::wide_helpers::recursive(*f)
                 && crate::wide_helpers::direct_uses(*f).is_ok()
-                && (policy != InliningPolicy::Selective
+                && (policy == InliningPolicy::RetainScalar
                     || f.get_enum_attribute(
                         inkwell::attributes::AttributeLoc::Function,
                         inkwell::attributes::Attribute::get_named_enum_kind_id("noinline"),
@@ -276,7 +299,8 @@ fn select(
         })
         .map(|f| f.get_name().to_string_lossy().into_owned())
         .filter(|name| name != entry && !required.contains(name))
-        .collect())
+        .collect();
+    Ok((kept, required))
 }
 
 pub(crate) fn specialize(module: &Module<'_>, entry: &str) -> Result<(), String> {
@@ -291,6 +315,17 @@ pub fn prepare<'ctx>(
     entry: &str,
     policy: InliningPolicy,
 ) -> Result<Module<'ctx>, String> {
+    prepare_forcing(input, entry, policy, &[])
+}
+
+/// `prepare`, with helpers that must be inlined whatever the policy would keep:
+/// the ones a previous attempt could not compile as calls.
+pub fn prepare_forcing<'ctx>(
+    input: &Module<'ctx>,
+    entry: &str,
+    policy: InliningPolicy,
+    forced: &[String],
+) -> Result<Module<'ctx>, String> {
     use inkwell::attributes::{Attribute, AttributeLoc};
     input.verify().map_err(|e| e.to_string())?;
     crate::require_entry(input, entry).map_err(|e| e.to_string())?;
@@ -299,13 +334,15 @@ pub fn prepare<'ctx>(
     // callbacks on panic paths. Let LLVM remove unreachable paths; never retain
     // recursive or escaping boundaries. Final legalization still rejects any
     // surviving recursion, function addresses, or indirect calls.
-    let names = select(&module, entry, policy, false)?;
+    let (names, required) = select(&module, entry, policy, false)?;
     let context = module.get_context();
     for function in module
         .get_functions()
         .filter(|f| f.count_basic_blocks() != 0)
     {
-        let keep = names.contains(&function.get_name().to_string_lossy().into_owned());
+        let name = function.get_name().to_string_lossy().into_owned();
+        let force = forced.contains(&name) || required.contains(&name);
+        let keep = names.contains(&name) && !force;
         for name in ["alwaysinline", "noinline", "optnone"] {
             function.remove_enum_attribute(
                 AttributeLoc::Function,
@@ -313,7 +350,9 @@ pub fn prepare<'ctx>(
             );
         }
         // The selected entry remains externally visible to the upstream optimizer.
-        if function.get_name().to_bytes() != entry.as_bytes() {
+        if function.get_name().to_bytes() != entry.as_bytes()
+            && (keep || force || policy != InliningPolicy::Llvm)
+        {
             function.add_attribute(
                 AttributeLoc::Function,
                 context.create_enum_attribute(
@@ -368,6 +407,14 @@ pub(crate) fn strip_modern_parameter_facts(module: &Module<'_>) {
     .filter(|id| *id != 0)
     .collect();
     for f in module.get_functions() {
+        // Size attributes have done their work in LLVM. Kernels that carry them
+        // to Apple's compiler return wrong answers on the GPU (M5, macOS 27).
+        for name in ["optsize", "minsize"] {
+            f.remove_enum_attribute(
+                AttributeLoc::Function,
+                Attribute::get_named_enum_kind_id(name),
+            );
+        }
         for loc in std::iter::once(AttributeLoc::Return)
             .chain((0..f.count_params()).map(AttributeLoc::Param))
         {
