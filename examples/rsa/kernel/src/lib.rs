@@ -67,6 +67,9 @@ kernel! {
 }
 
 /// `message ^ key.exponent mod key.modulus`, from the full 2048-bit message.
+// Inlined by hand: as a called function this ran 1.7 times slower on an M5
+// (issue #31). rustc inlines it on its own only at some window sizes.
+#[inline(always)]
 fn modexp_half(message: &[u32; FL], key: &HalfKey) -> [u32; HL] {
     let (m, n0inv) = (&key.modulus, key.n0inv);
     // Reduce 2048 -> 1024 bits and enter Montgomery form, with no division:
