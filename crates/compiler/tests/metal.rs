@@ -385,7 +385,7 @@ fn local_bytes_read_back_as_a_word_execute_on_metal() {
     let directory = root.join("target/metal-tests/punned-local");
     fs::create_dir_all(&directory).unwrap();
     let context = inkwell::context::Context::create();
-    let source = fs::read(root.join("tests/fixtures/positive/punned-local.ll")).unwrap();
+    let source = fs::read(root.join("tests/fixtures/gpu/punned-local.ll")).unwrap();
     let module = llvm_metal_compiler::parse_ir(&context, &source, "punned").unwrap();
     let compiled =
         llvm_metal_compiler::compile::compile(&module, &buffer_interface("punned", 8, 1)).unwrap();

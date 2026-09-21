@@ -208,7 +208,12 @@ define void @kernel(ptr %p) {{ %x = load i{width}, ptr %p, align 1
  ret void }}"#
         );
         let module = parse_ir(&context, ir.as_bytes(), "unsupported-width").unwrap();
-        assert!(legalize(&module, &interface()).is_err(), "i{width}");
+        // Byte multiples between i64 and i128 promote to i128, which `wide` lowers.
+        assert_eq!(
+            legalize(&module, &interface()).is_err(),
+            !matches!(width, 72 | 96),
+            "i{width}"
+        );
     }
     for width in WIDTHS {
         let vector = format!(

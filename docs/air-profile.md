@@ -134,6 +134,25 @@ Retained LLVM calls do not promise how Apple's backend will optimize them.
 Measure AIR size, first/repeated library and pipeline creation, GPU execution,
 and correctness independently when tuning the policy or choosing full inlining.
 
+### Building small kernels
+
+`build --inlining llvm` keeps the helpers `selective` would and leaves every
+other decision to LLVM's inliner, at `Os` and without the unroll boost. A helper
+that cannot stay a call (a pointer loaded from memory, `ptrtoint`, i128 memory)
+is known only once lowering has tried, so the builder inlines that helper and
+builds the entry again. Build the kernel crate with `opt-level = "s"`.
+
+Rust reports a panic by calling an undefined `noreturn` function. By default a
+kernel is refused unless optimization proves every such call dead, which in
+practice takes full inlining and unrolling. `build --panics unreachable` erases
+the calls instead, so LLVM deletes the checks that led to them. This removes a
+safety check: a kernel that would have panicked has undefined behaviour on the
+GPU. Use it for code whose CPU reference and tests already cover those paths.
+
+`optsize` and `minsize` are dropped before AIR: kernels carrying them returned
+wrong answers on Apple M5. Byte-multiple integers between i64 and i128, which
+SROA makes when it splits a stored i128, promote to i128.
+
 The external-operation whitelist includes byte swaps, funnel shifts, unsigned
 three-way comparison, scalar integer absolute value, leading/trailing-zero counts and signed/unsigned min/max,
 nonvolatile memcpy/memset and scalar C `memcmp`/`bcmp`,

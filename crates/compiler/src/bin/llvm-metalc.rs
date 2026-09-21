@@ -72,7 +72,7 @@ fn main() -> ExitCode {
     }
     if args.len() == 1 && args[0] == "--help" {
         println!(
-            "{USAGE}\n\nCompile the supported integer/buffer profile to AIR and metallib. Selective inlining is the default; use --inlining all to force full inlining. Compilation does not execute GPU code."
+            "{USAGE}\n\nCompile the supported integer/buffer profile to AIR and metallib. Selective inlining is the default; --inlining all forces full inlining and --inlining llvm lets LLVM decide. --panics unreachable assumes no panic is reached. Compilation does not execute GPU code."
         );
         return ExitCode::SUCCESS;
     }
