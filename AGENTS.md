@@ -65,7 +65,11 @@ list only with the evidence.
   validator and never asked Apple: an inherited "fact" is a guess until a test
   in that file shows it.
 - Kernels carrying `optsize`/`minsize` returned wrong answers on Apple M5.
-- PIC/PIE module flags crash Apple's pipeline compiler.
+- `llvm.memcpy` from constant to thread memory is accepted (`target_facts.rs`).
+- UNCONFIRMED: `master` saw PIC/PIE module flags crash Apple's pipeline compiler
+  on two large kernels. A small module with both flags and a constant table
+  runs correctly (`target_facts.rs`), so nothing here strips them. If pipeline
+  creation ever crashes, test this first.
 - Pipeline compile time grows with code size and runs on one core per pipeline.
 - rustc's release LLVM must be the major this project links, and no newer.
 

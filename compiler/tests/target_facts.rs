@@ -32,3 +32,15 @@ fn the_difference_of_two_thread_addresses_is_their_distance() {
 fn a_thread_address_can_be_observed_as_an_integer() {
     assert_eq!(probe("address", 11), Ok(11));
 }
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn constant_memory_copies_to_thread_memory() {
+    assert_eq!(probe("constant_copy", 2), Ok(7));
+}
+
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_position_independence_level_is_harmless() {
+    assert_eq!(probe("pic", 2), Ok(7));
+}
