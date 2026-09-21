@@ -78,6 +78,10 @@ list only with the evidence.
   `XPC_ERROR_CONNECTION_INTERRUPTED`. Reproducer: `tests/facts/pic_relocation.ll`.
   `emit` sets the level to zero. A compiler-service crash leaves a report in
   `~/Library/Logs/DiagnosticReports/MTLCompilerService-*.ips`: read it first.
+- A `llvm.memcpy` whose length is zero at run time never returns, and no watchdog
+  ends the command; a zero-length `llvm.memset` writes anyway
+  (`tests/facts/zero_copy.ll`, `target_facts.rs`, M5, macOS 27). Nothing guards
+  against either yet: an empty `copy_from_slice` in a kernel can hang the GPU.
 - Pipeline compile time grows with code size and runs on one core per pipeline.
 - rustc's release LLVM must be the major this project links, and no newer.
 

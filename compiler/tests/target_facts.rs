@@ -87,3 +87,12 @@ fn a_position_independent_module_runs_once_emit_clears_the_flag() {
     // The kernel's body is empty, so the output keeps what the test put there.
     assert_eq!(probe("pic_relocation", 0), Ok(0xa5a5_a5a5_a5a5_a5a5));
 }
+
+/// Apple's compiler expands a fill without testing for an empty one: the 42
+/// already in `to` is overwritten. The matching copy, `facts/zero_copy.ll`,
+/// never returns, and no watchdog ends it, so it has no test here.
+#[test]
+#[ignore = "requires an Apple GPU"]
+fn a_fill_of_run_time_length_zero_still_writes() {
+    assert_eq!(probe("zero_fill", 0), Ok(0));
+}
