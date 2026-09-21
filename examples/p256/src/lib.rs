@@ -2,7 +2,7 @@
 pub mod curve;
 
 use llvm_metal_kernel::{Handle, host};
-use llvm_metal_runtime::Pipeline;
+use llvm_metal_runtime::{Buffer, Pipeline};
 use p256_kernel::{Key, Request, Signature, point::Point, sign};
 use std::{
     path::{Path, PathBuf},
@@ -55,35 +55,39 @@ pub fn on_host(key: &Key, table: &[Point], requests: &[Request]) -> Vec<Signatur
     host::values(&host::launch(threads, buffers(key, table, requests), kernel)[3])
 }
 
-/// The kernel, compiled and ready to launch.
+/// The kernel, compiled and ready to launch, with the key and the table
+/// already on the GPU: they are written once, however many batches follow.
 pub struct Gpu {
     pipeline: Pipeline,
     slots: usize,
+    key: Buffer<Key>,
+    table: Buffer<Point>,
 }
 
 impl Gpu {
     /// Compile the kernel crate into `directory` and build its pipeline.
-    pub fn compile(directory: &Path) -> Result<Self, String> {
+    pub fn compile(directory: &Path, key: &Key, table: &[Point]) -> Result<Self, String> {
         let manifest = root().join("kernel/Cargo.toml");
         let compiled = llvm_metal_compiler::compile(&manifest, "sign", directory)
             .map_err(|error| format!("{error:#?}"))?;
+        let pipeline = Pipeline::load(&compiled.library, "sign")?;
         Ok(Gpu {
-            pipeline: Pipeline::load(&compiled.library, "sign")?,
+            key: pipeline.buffer_from(std::slice::from_ref(key))?,
+            table: pipeline.buffer_from(table)?,
             slots: compiled.bindings.buffers,
+            pipeline,
         })
     }
 
     /// Sign every request, one thread each; also the GPU's execution time.
-    pub fn sign(
-        &self,
-        key: &Key,
-        table: &[Point],
-        requests: &[Request],
-    ) -> Result<(Vec<Signature>, Duration), String> {
-        let mut buffers = buffers(key, table, requests);
-        let elapsed = self
-            .pipeline
-            .run(requests.len(), self.slots, &mut buffers)?;
-        Ok((host::values(&buffers[3]), elapsed))
+    pub fn sign(&mut self, requests: &[Request]) -> Result<(Vec<Signature>, Duration), String> {
+        let mut input = self.pipeline.buffer_from(requests)?;
+        let mut output = self.pipeline.buffer::<Signature>(requests.len())?;
+        let elapsed = self.pipeline.run(
+            requests.len(),
+            self.slots,
+            &mut [&mut self.key, &mut self.table, &mut input, &mut output],
+        )?;
+        Ok((output.read(<[Signature]>::to_vec), elapsed))
     }
 }

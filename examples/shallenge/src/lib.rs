@@ -22,11 +22,10 @@ pub fn on_gpu(request: &Request, threads: usize, directory: &Path) -> Result<Vec
     let manifest = root().join("kernel/Cargo.toml");
     let compiled = llvm_metal_compiler::compile(&manifest, "shallenge", directory)
         .map_err(|error| format!("{error:#?}"))?;
-    let mut buffers = buffers(request, threads);
-    llvm_metal_runtime::Pipeline::load(&compiled.library, "shallenge")?.run(
-        threads,
-        compiled.bindings.buffers,
-        &mut buffers,
-    )?;
-    Ok(host::values(&buffers[1]))
+    let pipeline = llvm_metal_runtime::Pipeline::load(&compiled.library, "shallenge")?;
+    let mut request = pipeline.buffer_from(std::slice::from_ref(request))?;
+    let mut records = pipeline.buffer::<Record>(threads)?;
+    let slots = compiled.bindings.buffers;
+    pipeline.run(threads, slots, &mut [&mut request, &mut records])?;
+    Ok(records.read(<[Record]>::to_vec))
 }

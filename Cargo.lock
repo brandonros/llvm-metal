@@ -177,6 +177,7 @@ dependencies = [
 name = "llvm-metal-runtime"
 version = "0.1.0"
 dependencies = [
+ "llvm-metal-kernel",
  "objc2",
  "objc2-foundation",
  "objc2-metal",

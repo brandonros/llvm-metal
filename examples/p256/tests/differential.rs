@@ -98,8 +98,8 @@ fn gpu_matches_host_at_every_optimization_level() {
         // SAFETY: the other tests in this binary do not read the environment.
         unsafe { std::env::set_var("CARGO_PROFILE_RELEASE_OPT_LEVEL", level) };
         let directory = p256::root().join("../../target/examples/p256").join(level);
-        let (signatures, _) = p256::Gpu::compile(&directory)
-            .and_then(|gpu| gpu.sign(&key, &table, &requests))
+        let (signatures, _) = p256::Gpu::compile(&directory, &key, &table)
+            .and_then(|mut gpu| gpu.sign(&requests))
             .unwrap_or_else(|error| panic!("opt-level {level}: {error}"));
         assert!(
             signatures == expected,

@@ -16,9 +16,11 @@ fn probe(name: &str, input: u64) -> Result<u64, String> {
         .create_module_from_ir(buffer)
         .map_err(|error| error.to_string())?;
     let library = emit::library(&module, "probe", &root.join("../target/facts").join(name))?;
-    let mut buffers = [input.to_le_bytes().to_vec(), vec![0xa5; 8]];
-    llvm_metal_runtime::Pipeline::load(&library, "probe")?.launch(1, &mut buffers)?;
-    Ok(u64::from_le_bytes(buffers[1][..].try_into().unwrap()))
+    let pipeline = llvm_metal_runtime::Pipeline::load(&library, "probe")?;
+    let mut input = pipeline.buffer_from(&[input])?;
+    let mut output = pipeline.buffer_from(&[0xa5a5_a5a5_a5a5_a5a5u64])?;
+    pipeline.launch(1, &mut [&mut input, &mut output])?;
+    Ok(output.read(|output| output[0]))
 }
 
 #[test]

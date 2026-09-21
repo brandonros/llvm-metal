@@ -9,11 +9,11 @@ fn main() -> Result<(), String> {
     let key = rsa::key::sign_key();
     let public = rsa::key::public_key();
     let messages = rsa::messages(batch);
-    let gpu = rsa::Gpu::compile(&rsa::root().join("../../target/examples/rsa/bench"))?;
+    let mut gpu = rsa::Gpu::compile(&rsa::root().join("../../target/examples/rsa/bench"), &key)?;
 
-    gpu.sign(&key, &messages[..1])?; // warm up
+    gpu.sign(&messages[..1])?; // warm up
     let start = Instant::now();
-    let (signatures, kernel) = gpu.sign(&key, &messages)?;
+    let (signatures, kernel) = gpu.sign(&messages)?;
     let total = start.elapsed();
     println!(
         "GPU  batch={batch}  kernel {kernel:.2?}, {:.0} signatures/s; end to end {total:.2?}, {:.0}/s",

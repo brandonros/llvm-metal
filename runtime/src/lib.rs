@@ -1,9 +1,60 @@
-//! Run a compute kernel from a Metal library, synchronously, over byte buffers.
+//! Run a compute kernel from a Metal library, synchronously, over buffers the
+//! runtime owns. The host and the GPU take turns with a buffer's memory, and
+//! the borrow checker keeps the turns: the host sees a buffer only inside
+//! `Buffer::read` or `Buffer::write`, and a launch borrows every buffer it
+//! binds mutably until the GPU is done. Nothing is copied on either side.
 #![cfg(target_os = "macos")]
+use llvm_metal_kernel::Plain;
 use objc2::{rc::Retained, runtime::ProtocolObject};
 use objc2_foundation::{NSString, NSURL};
 use objc2_metal::*;
-use std::{path::Path, ptr::NonNull, time::Duration};
+use std::{marker::PhantomData, path::Path, time::Duration};
+
+type Raw = ProtocolObject<dyn MTLBuffer>;
+
+/// `len` values of `T` in memory the GPU can be given.
+pub struct Buffer<T> {
+    raw: Retained<Raw>,
+    len: usize,
+    values: PhantomData<T>,
+}
+
+impl<T: Plain> Buffer<T> {
+    fn start(&self) -> *mut T {
+        // Metal's memory is page-aligned, which is enough for any `T`.
+        self.raw.contents().as_ptr().cast()
+    }
+
+    /// The host's turn, with the values to itself.
+    pub fn write<R>(&mut self, turn: impl FnOnce(&mut [T]) -> R) -> R {
+        // SAFETY: the buffer holds `len` values, any bits are a `Plain` value,
+        // and `&mut self` says no launch and no other turn is using them.
+        turn(unsafe { std::slice::from_raw_parts_mut(self.start(), self.len) })
+    }
+
+    /// The host's turn, only looking.
+    pub fn read<R>(&self, turn: impl FnOnce(&[T]) -> R) -> R {
+        // SAFETY: as in `write`; `&self` rules out a launch and a `write`.
+        turn(unsafe { std::slice::from_raw_parts(self.start(), self.len) })
+    }
+}
+
+mod sealed {
+    pub trait Sealed {}
+    impl<T> Sealed for super::Buffer<T> {}
+}
+
+/// A buffer of any element type, as a launch binds it.
+pub trait Bound: sealed::Sealed {
+    #[doc(hidden)]
+    fn raw(&mut self) -> &Raw;
+}
+
+impl<T> Bound for Buffer<T> {
+    fn raw(&mut self) -> &Raw {
+        &self.raw
+    }
+}
 
 /// A kernel ready to launch. Loading the library and building the pipeline is
 /// the slow part, and happens once, here.
@@ -35,75 +86,81 @@ impl Pipeline {
         })
     }
 
-    /// Launch the kernel once per thread. `buffers[i]` is bound at Metal buffer
-    /// index `i` and holds what the kernel left there on return. Returns how
-    /// long the GPU spent executing, by its own clock.
-    pub fn launch(&self, threads: usize, buffers: &mut [Vec<u8>]) -> Result<Duration, String> {
+    /// `len` zeroed values. Metal has no empty buffer, so `len` is not zero.
+    pub fn buffer<T: Plain>(&self, len: usize) -> Result<Buffer<T>, String> {
+        let bytes = len * size_of::<T>();
+        let raw = (bytes > 0)
+            .then(|| {
+                self.device
+                    .newBufferWithLength_options(bytes, MTLResourceOptions::StorageModeShared)
+            })
+            .flatten()
+            .ok_or(format!("cannot allocate a buffer of {bytes} bytes"))?;
+        Ok(Buffer {
+            raw,
+            len,
+            values: PhantomData,
+        })
+    }
+
+    /// A buffer holding a copy of `values`.
+    pub fn buffer_from<T: Plain>(&self, values: &[T]) -> Result<Buffer<T>, String> {
+        let mut buffer = self.buffer(values.len())?;
+        buffer.write(|slice| slice.copy_from_slice(values));
+        Ok(buffer)
+    }
+
+    /// Launch the kernel once per thread, with `buffers[i]` bound at Metal
+    /// buffer index `i`. Returns how long the GPU spent executing, by its own
+    /// clock.
+    pub fn launch(
+        &self,
+        threads: usize,
+        buffers: &mut [&mut dyn Bound],
+    ) -> Result<Duration, String> {
+        let bound: Vec<&Raw> = buffers.iter_mut().map(|buffer| buffer.raw()).collect();
+        self.dispatch(threads, &bound)
+    }
+
+    fn dispatch(&self, threads: usize, buffers: &[&Raw]) -> Result<Duration, String> {
         let command = self.queue.commandBuffer().ok_or("no command buffer")?;
         let encoder = command.computeCommandEncoder().ok_or("no encoder")?;
         encoder.setComputePipelineState(&self.state);
-        let mut shared = Vec::new();
-        for (index, bytes) in buffers.iter().enumerate() {
-            let start = NonNull::new(bytes.as_ptr().cast_mut().cast()).ok_or("empty buffer")?;
-            // SAFETY: `start` is valid for `bytes.len()` bytes, which Metal copies.
-            let buffer = unsafe {
-                self.device.newBufferWithBytes_length_options(
-                    start,
-                    bytes.len(),
-                    MTLResourceOptions::StorageModeShared,
-                )
-            }
-            .ok_or("buffer allocation failed")?;
-            // SAFETY: the buffer outlives the command, and the offset is inside it.
-            unsafe { encoder.setBuffer_offset_atIndex(Some(&buffer), 0, index) };
-            shared.push(buffer);
+        for (index, buffer) in buffers.iter().enumerate() {
+            // SAFETY: the caller's borrow outlives the command, which this
+            // function waits for, and the offset is inside the buffer.
+            unsafe { encoder.setBuffer_offset_atIndex(Some(buffer), 0, index) };
         }
         // One SIMD group per threadgroup. Nothing here uses threadgroup memory, so a
         // larger group buys nothing, and the largest (1,024 on an M5) ran the RSA
         // example 2.6 times slower (issue #31).
         let group = self.state.threadExecutionWidth();
-        encoder.dispatchThreads_threadsPerThreadgroup(
-            MTLSize {
-                width: threads,
-                height: 1,
-                depth: 1,
-            },
-            MTLSize {
-                width: group,
-                height: 1,
-                depth: 1,
-            },
-        );
+        let size = |width| MTLSize {
+            width,
+            height: 1,
+            depth: 1,
+        };
+        encoder.dispatchThreads_threadsPerThreadgroup(size(threads), size(group));
         encoder.endEncoding();
         command.commit();
         command.waitUntilCompleted();
         if command.status() != MTLCommandBufferStatus::Completed {
             return Err(format!("GPU command failed: {:?}", command.error()));
         }
-        for (bytes, buffer) in buffers.iter_mut().zip(&shared) {
-            // SAFETY: the GPU is done, and both sides are `bytes.len()` long.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    buffer.contents().as_ptr().cast::<u8>(),
-                    bytes.as_mut_ptr(),
-                    bytes.len(),
-                );
-            }
-        }
         Ok(Duration::from_secs_f64(
             command.GPUEndTime() - command.GPUStartTime(),
         ))
     }
 
-    /// Launch a compiled kernel over its own `buffers`. `slots` is how many the
-    /// kernel names (the compiler reports it); after those come what every
-    /// kernel receives, the lengths of its buffers and the status word. Fails if
-    /// any thread panicked, and then the buffers hold nothing meaningful.
+    /// Launch a compiled kernel over the first `slots` of `buffers`: as many as the
+    /// compiler reported it names, because what follows them is placed by count:
+    /// the lengths of the buffers in bytes, and the status word. Fails if any
+    /// thread panicked, and then the buffers hold nothing meaningful.
     pub fn run(
         &self,
         threads: usize,
         slots: usize,
-        buffers: &mut [Vec<u8>],
+        buffers: &mut [&mut dyn Bound],
     ) -> Result<Duration, String> {
         if buffers.len() < slots {
             return Err(format!(
@@ -111,19 +168,20 @@ impl Pipeline {
                 buffers.len()
             ));
         }
-        let mut bound = buffers[..slots].to_vec();
-        let lengths = bound
-            .iter()
-            .flat_map(|buffer| (buffer.len() as u64).to_le_bytes())
-            .collect();
-        bound.extend([lengths, 0u32.to_le_bytes().to_vec()]);
-        let elapsed = self.launch(threads, &mut bound)?;
-        if bound[slots + 1] != [0; 4] {
-            return Err("a thread panicked".into());
+        let buffers = &mut buffers[..slots];
+        let mut lengths = self.buffer::<u64>(buffers.len().max(1))?;
+        lengths.write(|lengths| {
+            for (length, buffer) in lengths.iter_mut().zip(buffers.iter_mut()) {
+                *length = buffer.raw().length() as u64;
+            }
+        });
+        let status = self.buffer::<u32>(1)?;
+        let mut bound: Vec<&Raw> = buffers.iter_mut().map(|buffer| buffer.raw()).collect();
+        bound.extend([&*lengths.raw, &*status.raw]);
+        let elapsed = self.dispatch(threads, &bound)?;
+        match status.read(|status| status[0]) {
+            0 => Ok(elapsed),
+            _ => Err("a thread panicked".into()),
         }
-        for (buffer, result) in buffers.iter_mut().zip(bound.into_iter().take(slots)) {
-            *buffer = result;
-        }
-        Ok(elapsed)
     }
 }

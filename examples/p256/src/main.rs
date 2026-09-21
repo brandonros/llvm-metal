@@ -13,11 +13,12 @@ fn main() -> Result<(), String> {
     let table = curve::table(&key);
     let public = curve::multiply(&d, &curve::generator(&key), &key);
     let requests = p256::requests(batch);
-    let gpu = p256::Gpu::compile(&p256::root().join("../../target/examples/p256/bench"))?;
+    let directory = p256::root().join("../../target/examples/p256/bench");
+    let mut gpu = p256::Gpu::compile(&directory, &key, &table)?;
 
-    gpu.sign(&key, &table, &requests[..1])?; // warm up
+    gpu.sign(&requests[..1])?; // warm up
     let start = Instant::now();
-    let (signatures, kernel) = gpu.sign(&key, &table, &requests)?;
+    let (signatures, kernel) = gpu.sign(&requests)?;
     let total = start.elapsed();
     println!(
         "GPU  batch={batch}  kernel {kernel:.2?}, {:.0} signatures/s; end to end {total:.2?}, {:.0}/s",

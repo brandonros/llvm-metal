@@ -34,13 +34,12 @@ fn run(
         .join(test);
     let compiled =
         compile_bitcode(&[bitcode], "k", &directory).map_err(|error| format!("{error:?}"))?;
-    let mut buffers = vec![input.to_vec(), vec![0; output]];
-    llvm_metal_runtime::Pipeline::load(&compiled.library, "k")?.run(
-        threads,
-        compiled.bindings.buffers,
-        &mut buffers,
-    )?;
-    Ok(buffers.pop().unwrap())
+    let pipeline = llvm_metal_runtime::Pipeline::load(&compiled.library, "k")?;
+    let mut input = pipeline.buffer_from(input)?;
+    let mut output = pipeline.buffer::<u8>(output)?;
+    let slots = compiled.bindings.buffers;
+    pipeline.run(threads, slots, &mut [&mut input, &mut output])?;
+    Ok(output.read(<[u8]>::to_vec))
 }
 
 #[test]

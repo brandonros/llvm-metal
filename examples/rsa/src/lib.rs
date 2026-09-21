@@ -2,7 +2,7 @@
 pub mod key;
 
 use llvm_metal_kernel::{Handle, host};
-use llvm_metal_runtime::Pipeline;
+use llvm_metal_runtime::{Buffer, Pipeline};
 use rsa_kernel::{FL, SignKey, sign};
 use std::{
     path::{Path, PathBuf},
@@ -50,34 +50,36 @@ pub fn on_host(key: &SignKey, messages: &[Number]) -> Vec<Number> {
     host::values(&host::launch(threads, buffers(key, messages), kernel)[2])
 }
 
-/// The kernel, compiled and ready to launch.
+/// The kernel, compiled and ready to launch, with the key already on the GPU.
 pub struct Gpu {
     pipeline: Pipeline,
     slots: usize,
+    key: Buffer<SignKey>,
 }
 
 impl Gpu {
     /// Compile the kernel crate into `directory` and build its pipeline.
-    pub fn compile(directory: &Path) -> Result<Self, String> {
+    pub fn compile(directory: &Path, key: &SignKey) -> Result<Self, String> {
         let manifest = root().join("kernel/Cargo.toml");
         let compiled = llvm_metal_compiler::compile(&manifest, "sign", directory)
             .map_err(|error| format!("{error:#?}"))?;
+        let pipeline = Pipeline::load(&compiled.library, "sign")?;
         Ok(Gpu {
-            pipeline: Pipeline::load(&compiled.library, "sign")?,
+            key: pipeline.buffer_from(std::slice::from_ref(key))?,
             slots: compiled.bindings.buffers,
+            pipeline,
         })
     }
 
     /// Sign every message, one thread each; also the GPU's execution time.
-    pub fn sign(
-        &self,
-        key: &SignKey,
-        messages: &[Number],
-    ) -> Result<(Vec<Number>, Duration), String> {
-        let mut buffers = buffers(key, messages);
-        let elapsed = self
-            .pipeline
-            .run(messages.len(), self.slots, &mut buffers)?;
-        Ok((host::values(&buffers[2]), elapsed))
+    pub fn sign(&mut self, messages: &[Number]) -> Result<(Vec<Number>, Duration), String> {
+        let mut input = self.pipeline.buffer_from(messages)?;
+        let mut output = self.pipeline.buffer::<Number>(messages.len())?;
+        let elapsed = self.pipeline.run(
+            messages.len(),
+            self.slots,
+            &mut [&mut self.key, &mut input, &mut output],
+        )?;
+        Ok((output.read(<[Number]>::to_vec), elapsed))
     }
 }
