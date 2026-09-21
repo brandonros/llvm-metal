@@ -42,5 +42,4 @@ nix develop --command cargo test -- --ignored --test-threads=1   # GPU tests
 nix develop --command cargo run --release -p shallenge
 ```
 
-Read `AGENTS.md` before changing anything. The first compiler, a different
-design, is kept at the tag `v1`.
+Read `AGENTS.md` before changing anything.
