@@ -98,12 +98,13 @@ fn gpu_matches_host_at_every_optimization_level() {
         // SAFETY: the other tests in this binary do not read the environment.
         unsafe { std::env::set_var("CARGO_PROFILE_RELEASE_OPT_LEVEL", level) };
         let directory = p256::root().join("../../target/examples/p256").join(level);
-        let (signatures, _) = p256::Gpu::compile(&directory, &key, &table)
-            .and_then(|mut gpu| gpu.sign(&requests))
+        let matches = p256::Gpu::compile(&directory, &key, &table, requests.len())
+            .and_then(|mut gpu| {
+                gpu.requests.write(|slice| slice.copy_from_slice(&requests));
+                gpu.sign(requests.len())?;
+                Ok(gpu.signatures.read(|signatures| signatures == expected))
+            })
             .unwrap_or_else(|error| panic!("opt-level {level}: {error}"));
-        assert!(
-            signatures == expected,
-            "opt-level {level}: GPU and host differ"
-        );
+        assert!(matches, "opt-level {level}: GPU and host differ");
     }
 }

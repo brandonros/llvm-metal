@@ -17,8 +17,14 @@ pub fn on_host(request: &Request, threads: usize) -> Vec<Record> {
     host::values(&host::launch(threads as u32, buffers(request, threads), kernel)[1])
 }
 
-/// Compile the kernel crate into `directory` and run it on the GPU.
-pub fn on_gpu(request: &Request, threads: usize, directory: &Path) -> Result<Vec<Record>, String> {
+/// Compile the kernel crate into `directory`, run it on the GPU, and let `look`
+/// at the records where the GPU left them.
+pub fn on_gpu<R>(
+    request: &Request,
+    threads: usize,
+    directory: &Path,
+    look: impl FnOnce(&[Record]) -> R,
+) -> Result<R, String> {
     let manifest = root().join("kernel/Cargo.toml");
     let compiled = llvm_metal_compiler::compile(&manifest, "shallenge", directory)
         .map_err(|error| format!("{error:#?}"))?;
@@ -27,5 +33,5 @@ pub fn on_gpu(request: &Request, threads: usize, directory: &Path) -> Result<Vec
     let mut records = pipeline.buffer::<Record>(threads)?;
     let slots = compiled.bindings.buffers;
     pipeline.run(threads, slots, &mut [&mut request, &mut records])?;
-    Ok(records.read(<[Record]>::to_vec))
+    Ok(records.read(look))
 }

@@ -18,12 +18,13 @@ fn gpu_matches_host_at_every_optimization_level() {
         // SAFETY: this test binary has one test and no other threads.
         unsafe { std::env::set_var("CARGO_PROFILE_RELEASE_OPT_LEVEL", level) };
         let directory = rsa::root().join("../../target/examples/rsa").join(level);
-        let (signatures, _) = rsa::Gpu::compile(&directory, &key)
-            .and_then(|mut gpu| gpu.sign(&messages))
+        let matches = rsa::Gpu::compile(&directory, &key, messages.len())
+            .and_then(|mut gpu| {
+                gpu.messages.write(|slice| slice.copy_from_slice(&messages));
+                gpu.sign(messages.len())?;
+                Ok(gpu.signatures.read(|signatures| signatures == expected))
+            })
             .unwrap_or_else(|error| panic!("opt-level {level}: {error}"));
-        assert!(
-            signatures == expected,
-            "opt-level {level}: GPU and host differ"
-        );
+        assert!(matches, "opt-level {level}: GPU and host differ");
     }
 }

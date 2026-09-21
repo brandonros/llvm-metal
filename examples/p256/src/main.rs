@@ -12,13 +12,13 @@ fn main() -> Result<(), String> {
     let key = curve::key(&d);
     let table = curve::table(&key);
     let public = curve::multiply(&d, &curve::generator(&key), &key);
-    let requests = p256::requests(batch);
     let directory = p256::root().join("../../target/examples/p256/bench");
-    let mut gpu = p256::Gpu::compile(&directory, &key, &table)?;
+    let mut gpu = p256::Gpu::compile(&directory, &key, &table, batch)?;
 
-    gpu.sign(&requests[..1])?; // warm up
+    gpu.requests.write(p256::fill);
+    gpu.sign(1)?; // warm up
     let start = Instant::now();
-    let (signatures, kernel) = gpu.sign(&requests)?;
+    let kernel = gpu.sign(batch)?;
     let total = start.elapsed();
     println!(
         "GPU  batch={batch}  kernel {kernel:.2?}, {:.0} signatures/s; end to end {total:.2?}, {:.0}/s",
@@ -26,26 +26,29 @@ fn main() -> Result<(), String> {
         batch as f64 / total.as_secs_f64(),
     );
 
-    let sample = &requests[..batch.min(2048)];
-    let start = Instant::now();
-    let expected = p256::on_host(&key, &table, sample);
-    let rate = sample.len() as f64 / start.elapsed().as_secs_f64();
-    println!(
-        "host batch={}  {rate:.0} signatures/s on one core",
-        sample.len()
-    );
+    let sample = batch.min(2048);
+    let (requests, signatures) = (&gpu.requests, &gpu.signatures);
+    requests.read(|requests| {
+        signatures.read(|signatures| {
+            let start = Instant::now();
+            let expected = p256::on_host(&key, &table, &requests[..sample]);
+            let rate = sample as f64 / start.elapsed().as_secs_f64();
+            println!("host batch={sample}  {rate:.0} signatures/s on one core");
 
-    let bad = (signatures.iter().zip(sample))
-        .filter(|(signature, request)| !curve::verifies(signature, &request.z, &public, &key))
-        .count();
-    println!(
-        "public key rejected {bad} of the first {}; GPU matches host: {}",
-        sample.len(),
-        signatures[..sample.len()] == expected
-    );
-    if bad == 0 {
-        Ok(())
-    } else {
-        Err("bad signatures".into())
-    }
+            let bad = (signatures[..sample].iter().zip(requests))
+                .filter(|(signature, request)| {
+                    !curve::verifies(signature, &request.z, &public, &key)
+                })
+                .count();
+            println!(
+                "public key rejected {bad} of the first {sample}; GPU matches host: {}",
+                signatures[..sample] == expected
+            );
+            if bad == 0 {
+                Ok(())
+            } else {
+                Err("bad signatures".into())
+            }
+        })
+    })
 }

@@ -10,11 +10,10 @@ fn main() -> Result<(), String> {
         prefix,
     };
     let directory = shallenge::root().join("../../target/examples/shallenge");
-    let records = shallenge::on_gpu(&request, 1 << 16, &directory)?;
-    let best = records
-        .iter()
-        .min_by_key(|record| record.hash)
-        .ok_or("no threads")?;
+    let best = shallenge::on_gpu(&request, 1 << 16, &directory, |records| {
+        records.iter().min_by_key(|record| record.hash).copied()
+    })?
+    .ok_or("no threads")?;
     let hash: String = best.hash.iter().map(|byte| format!("{byte:02x}")).collect();
     println!(
         "{}{}  {hash}",

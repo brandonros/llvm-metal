@@ -18,11 +18,9 @@ fn gpu_matches_host_at_every_optimization_level() {
         let directory = shallenge::root()
             .join("../../target/examples/shallenge")
             .join(level);
-        let records = shallenge::on_gpu(&request, threads, &directory)
-            .unwrap_or_else(|error| panic!("opt-level {level}: {error}"));
-        assert!(
-            records == expected,
-            "opt-level {level}: GPU and host differ"
-        );
+        let matches =
+            shallenge::on_gpu(&request, threads, &directory, |records| records == expected)
+                .unwrap_or_else(|error| panic!("opt-level {level}: {error}"));
+        assert!(matches, "opt-level {level}: GPU and host differ");
     }
 }
