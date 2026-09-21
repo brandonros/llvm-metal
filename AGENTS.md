@@ -107,9 +107,12 @@ Each of these removes something that was built here and had to be deleted.
   coverage or ownership JSON, discovery cross-checks, or provenance files for
   fixtures. A test that must not run by default is `#[ignore]` with its
   requirement in the reason.
-- **No workload kernels here.** vanity-miner-rs is the acceptance bench. This
-  repository keeps small IR tests and the single-file kernels that test its own
-  crates. A compiler bug found by a workload becomes a reduced IR fixture under
+- **No copies of consumer code here.** `examples/` holds kernels written against
+  the public v2 interface, built by the workspace and run by its tests: they are
+  the interface's documentation and the rewrite's bench. Never vendor a consumer's
+  crate or pin a consumer. vanity-miner-rs remains the bench for `crates/compiler`
+  only. Beyond `examples/`, this repository keeps small IR tests and the
+  single-file kernels that test its own crates. A compiler bug found by a workload becomes a reduced IR fixture under
   `tests/fixtures/`, never a fixture workspace, a consumer pin or a
   `*_CONSUMER_PATH` variable.
 - **Consumers supply bitcode and nothing else.** Anything needed to turn a kernel
