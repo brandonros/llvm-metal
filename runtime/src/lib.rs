@@ -58,7 +58,10 @@ impl Pipeline {
             unsafe { encoder.setBuffer_offset_atIndex(Some(&buffer), 0, index) };
             shared.push(buffer);
         }
-        let group = (self.state.maxTotalThreadsPerThreadgroup()).min(threads.max(1));
+        // One SIMD group per threadgroup. Nothing here uses threadgroup memory, so a
+        // larger group buys nothing, and the largest (1,024 on an M5) ran the RSA
+        // example 2.6 times slower (issue #31).
+        let group = self.state.threadExecutionWidth();
         encoder.dispatchThreads_threadsPerThreadgroup(
             MTLSize {
                 width: threads,
