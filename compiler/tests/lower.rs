@@ -35,9 +35,7 @@ fn run(
     let compiled =
         compile_bitcode(&[bitcode], "k", &directory).map_err(|error| format!("{error:?}"))?;
     let mut buffers = vec![input.to_vec(), vec![0; output]];
-    llvm_metal_runtime::run(
-        &compiled.library,
-        "k",
+    llvm_metal_runtime::Pipeline::load(&compiled.library, "k")?.run(
         threads,
         compiled.bindings.buffers,
         &mut buffers,

@@ -1,10 +1,13 @@
 //! Run the RSA signing kernel on the host and on the GPU.
 pub mod key;
 
-use llvm_metal_compiler::Compiled;
 use llvm_metal_kernel::{Handle, host};
+use llvm_metal_runtime::Pipeline;
 use rsa_kernel::{FL, SignKey, sign};
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 pub type Number = [u32; FL];
 
@@ -47,25 +50,34 @@ pub fn on_host(key: &SignKey, messages: &[Number]) -> Vec<Number> {
     host::values(&host::launch(threads, buffers(key, messages), kernel)[2])
 }
 
-/// Compile the kernel crate into `directory`.
-pub fn compile(directory: &Path) -> Result<Compiled, String> {
-    let manifest = root().join("kernel/Cargo.toml");
-    llvm_metal_compiler::compile(&manifest, "sign", directory).map_err(|e| format!("{e:#?}"))
+/// The kernel, compiled and ready to launch.
+pub struct Gpu {
+    pipeline: Pipeline,
+    slots: usize,
 }
 
-/// Sign every message on the GPU, one thread each.
-pub fn on_gpu(
-    compiled: &Compiled,
-    key: &SignKey,
-    messages: &[Number],
-) -> Result<Vec<Number>, String> {
-    let mut buffers = buffers(key, messages);
-    llvm_metal_runtime::run(
-        &compiled.library,
-        "sign",
-        messages.len(),
-        compiled.bindings.buffers,
-        &mut buffers,
-    )?;
-    Ok(host::values(&buffers[2]))
+impl Gpu {
+    /// Compile the kernel crate into `directory` and build its pipeline.
+    pub fn compile(directory: &Path) -> Result<Self, String> {
+        let manifest = root().join("kernel/Cargo.toml");
+        let compiled = llvm_metal_compiler::compile(&manifest, "sign", directory)
+            .map_err(|error| format!("{error:#?}"))?;
+        Ok(Gpu {
+            pipeline: Pipeline::load(&compiled.library, "sign")?,
+            slots: compiled.bindings.buffers,
+        })
+    }
+
+    /// Sign every message, one thread each; also the GPU's execution time.
+    pub fn sign(
+        &self,
+        key: &SignKey,
+        messages: &[Number],
+    ) -> Result<(Vec<Number>, Duration), String> {
+        let mut buffers = buffers(key, messages);
+        let elapsed = self
+            .pipeline
+            .run(messages.len(), self.slots, &mut buffers)?;
+        Ok((host::values(&buffers[2]), elapsed))
+    }
 }

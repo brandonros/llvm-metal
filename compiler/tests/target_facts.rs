@@ -17,7 +17,7 @@ fn probe(name: &str, input: u64) -> Result<u64, String> {
         .map_err(|error| error.to_string())?;
     let library = emit::library(&module, "probe", &root.join("../target/facts").join(name))?;
     let mut buffers = [input.to_le_bytes().to_vec(), vec![0xa5; 8]];
-    llvm_metal_runtime::launch(&library, "probe", 1, &mut buffers)?;
+    llvm_metal_runtime::Pipeline::load(&library, "probe")?.launch(1, &mut buffers)?;
     Ok(u64::from_le_bytes(buffers[1][..].try_into().unwrap()))
 }
 

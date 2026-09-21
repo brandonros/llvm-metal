@@ -18,8 +18,8 @@ fn gpu_matches_host_at_every_optimization_level() {
         // SAFETY: this test binary has one test and no other threads.
         unsafe { std::env::set_var("CARGO_PROFILE_RELEASE_OPT_LEVEL", level) };
         let directory = rsa::root().join("../../target/examples/rsa").join(level);
-        let signatures = rsa::compile(&directory)
-            .and_then(|compiled| rsa::on_gpu(&compiled, &key, &messages))
+        let (signatures, _) = rsa::Gpu::compile(&directory)
+            .and_then(|gpu| gpu.sign(&key, &messages))
             .unwrap_or_else(|error| panic!("opt-level {level}: {error}"));
         assert!(
             signatures == expected,
