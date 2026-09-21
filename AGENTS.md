@@ -1,104 +1,105 @@
 # llvm-metal
 
 **This is a GPU dialect of Rust.** Kernels are written for the GPU. Compiling
-arbitrary crates (crypto-bigint, for example) is not a goal: that is a CPU-to-GPU
-port. A compiler that accepts arbitrary Rust has to repair the IR until Apple
-takes it, and then whether a kernel builds depends on what the optimizer
-happened to do. The compiler's job here is to make GPU code correct and to tell
-the author precisely, at build time, what is not allowed. When `verify` refuses
-what an existing crate does, the kernel is rewritten; "make crate X build" is
-out of scope.
+arbitrary crates is not a goal: a compiler that accepts arbitrary Rust has to
+repair the IR until Apple takes it, and then whether a kernel builds depends on
+what the optimizer happened to do. The compiler makes GPU code correct and says
+precisely, at build time, what is not allowed. When `verify` refuses what a
+crate does, the kernel is rewritten; "make crate X build" is out of scope.
 
-The rules below are tripwires, not values: when one trips, stop and report; do
-not reason past it.
+The rules below are tripwires: when one trips, stop and report; do not reason
+past it.
 
 ## Invariants
 
 1. **Acceptance never depends on optimization.** `verify` decides, before any
-   pass runs. If an opt level, attribute or pass order changes whether a kernel
-   builds or what it computes, that is a bug in the design, not something to tune.
+   pass runs. An opt level, attribute or pass order that changes whether a
+   kernel builds or what it computes is a design bug, not something to tune.
 2. **Device memory is touched only through the buffer intrinsics.** Every other
-   pointer is thread memory by construction. No address-space inference, no
-   pointer provenance, no specialization by analysis.
-3. **Every refusal is a `Rule`:** one enum variant, with a doc comment that is the
-   spec, one test, and the Rust source location in the message.
-4. **`lower` is a fixed list of rewrites.** Each runs once, is deterministic and
-   states its pre- and postcondition. No retries, no fixpoints over refusals, no
-   thresholds, no policies.
+   pointer is thread memory by construction. No address-space inference.
+3. **Every refusal is a `Rule`:** one enum variant whose doc comment is the spec,
+   one test, and the Rust source location in the message.
+4. **`lower` is a fixed list of rewrites,** each run once, deterministic, with a
+   stated pre- and postcondition. No retries, thresholds or policies.
 5. **The host build of the same kernel source is the reference.** Every GPU test
-   is differential against it.
+   is differential against it, and every example also has a check that shares
+   no code with what it checks (a published vector, a second implementation).
 
 ## Stop and report; do not code around it
 
-- `verify` refuses a kernel. The kernel changes or the spec changes, and the user
-  decides which. Never add a lowering in the same session.
-- Host and GPU disagree. Reduce it. Do not change flags, attributes or pass order
-  until the cause is known.
-- The fix you are about to write is keyed on an opcode, a symbol name, a bit
-  width or an instruction count.
-- You are about to add a CLI flag, a mode, a policy or a fallback.
-- You are about to make something pass by making it optional.
+- `verify` refuses a kernel. The kernel or the spec changes, and the user decides
+  which. Never add a lowering in the same session.
+- Host and GPU disagree. Reduce it before changing anything.
+- The fix is keyed on an opcode, a symbol name, a bit width or a count.
+- You are about to add a CLI flag, a mode, a policy or a fallback, or to make
+  something pass by making it optional.
 - A source file passes 400 lines, or `verify` + `lower` together pass 1,200.
-  Size is the alarm for accumulated special cases.
 - The task has become a different task. One session, one issue, one scope.
-- A spike question comes back "no". The design is wrong; say so.
 
 ## Before writing code
 
 - State what is wrong with the approach and whether you would build it this way
-  from scratch. Do this first, unasked.
-- A design change is a change to the invariants or to a `Rule`'s doc comment,
-  agreed with the user, before the code that needs it.
+  from scratch. First, unasked.
+- A change to an invariant, a `Rule` or the kernel interface is agreed with the
+  user first, and an interface proposal comes with a number from a kernel that
+  would benefit. Intuition is not evidence.
 - Done means: invariants hold, the diff is as small as it can be, and the report
-  lists what was not run. Passing tests are necessary, not the goal.
-- Never describe defensive code as rigor. Say what it guards and what evidence
-  says the guard is needed; if there is none, delete it.
+  lists what was not run. A claim that turns out wrong is corrected where it
+  was made.
+- Defensive code states what it guards and the evidence; with none, delete it.
+
+## Written for the GPU
+
+One job per thread, all parallelism across jobs. Constant loop bounds. A
+mask-select where CPU code would branch on data. The host lays data out once;
+large shared tables go in an `In<[T]>` buffer, never a Rust `const` (a `const`
+is copied into every thread). A thread keeps its own best; do not send
+everything back. Buffers are filled and checked in place. Toy cryptography says
+so at the top of the file. Each example carries its own code: no shared crates.
 
 ## Known facts about the target
 
-A fact is a guess until a test in `compiler/tests/target_facts.rs` shows it.
-Verify before relying on one; add to the list only with the evidence.
+A fact is a guess until a test in `compiler/tests/target_facts.rs` shows it. A
+test that can hang the GPU stays out of the suite: keep its reproducer file.
 
 - Apple's compiler accepts only LLVM 14-encoded bitcode (`llvm-downgrade`).
-- Metal pointers carry one of three address spaces: device, constant, thread.
+- Pointers carry one of three address spaces: device, constant, thread.
 - No i128, no recursion, no indirect calls, no trap.
-- `ptrtoint` on a thread pointer is accepted and correct, folded or not
-  (`compiler/tests/target_facts.rs`, M5, macOS 27).
-- Kernels carrying `optsize`/`minsize` returned wrong answers on Apple M5.
-- `llvm.memcpy` from constant to thread memory is accepted (`target_facts.rs`).
-- rustc's `PIC Level` module flag can kill Apple's compiler service: a null
-  dereference in a machine function pass, reported as
-  `XPC_ERROR_CONNECTION_INTERRUPTED`. Reproducer: `tests/facts/pic_relocation.ll`.
-  `emit` sets the level to zero. A compiler-service crash leaves a report in
-  `~/Library/Logs/DiagnosticReports/MTLCompilerService-*.ips`: read it first.
-- A `llvm.memcpy` whose length is zero at run time never returns, and no watchdog
-  ends the command; a zero-length `llvm.memset` writes anyway
-  (`tests/facts/zero_copy.ll`, `target_facts.rs`, M5, macOS 27). Nothing guards
-  against either yet: an empty `copy_from_slice` in a kernel can hang the GPU.
-- Pipeline compile time grows with code size and runs on one core per pipeline.
+- `ptrtoint` on a thread pointer is accepted; `memcpy` from constant to thread
+  memory is accepted.
+- rustc's `PIC Level` module flag can crash Apple's compiler service
+  (`XPC_ERROR_CONNECTION_INTERRUPTED`; `tests/facts/pic_relocation.ll`); `emit`
+  clears it. A crash leaves `~/Library/Logs/DiagnosticReports/MTLCompilerService-*.ips`:
+  read it first.
+- A `memcpy` of run-time length zero never returns, and no watchdog ends it; a
+  zero-length `memset` writes anyway (`tests/facts/zero_copy.ll`). **Nothing
+  guards this yet:** an empty `copy_from_slice` in a kernel can hang the GPU.
+- Pipeline compile time grows with code size, on one core per pipeline.
 - rustc's release LLVM must be the major this project links, and no newer.
+
+Measured on an M5; re-measure before relying on one:
+
+- A threadgroup is one SIMD group wide; the widest was 2.6 times slower.
+- A kernel built at opt-level 0 runs 7 to 20 times slower; `s` is close to `3`.
+- A call to a function with a multi-KB frame cost 1.7 times (unexplained).
+- Throughput drifts about 30% with the machine's state. Compare variants by
+  interleaved runs of the GPU's own kernel time, never one before and one after.
 
 ## Tooling
 
-- Use the development shell: `nix develop --command`. Use `path:.` when inputs
-  include untracked files.
-- Everything is Rust in one Cargo workspace. No Python, no shell scripts, no
-  second language, no C/C++/Objective-C, no `build.rs`. LLVM is reached only
-  through its C API (`llvm-sys`, Inkwell).
-- Tests are `cargo test`. No runner around the runner, no inventories, coverage
-  or provenance JSON. A test that needs a GPU is `#[ignore]` with the reason.
-- `examples/` holds kernels written against the public interface, built by the
-  workspace and run by its tests. Never vendor or pin a consumer.
-- No metadata the code does not read. No hand-kept lists, no checker that
-  compares two of them.
-- GPU runs are serial. Report which stages ran (verify, library and pipeline
-  creation, checked execution), on what hardware, and what was skipped.
+- Use the development shell: `nix develop --command` (`path:.` when inputs
+  include untracked files).
+- One Cargo workspace, all Rust: no second language, no scripts, no `build.rs`.
+  LLVM only through its C API (`llvm-sys`, Inkwell).
+- Tests are `cargo test`; a GPU test is `#[ignore]` with the reason. Nothing is
+  kept that the code does not read: no inventories, no hand-kept lists.
+- GPU runs are serial. Report which stages ran, on what hardware, and what was
+  skipped.
 - Leave nothing uncommitted. Park unfinished work on a pushed branch whose
   message states its condition.
 
 ## Documentation
 
-- `README.md` is a short entry point, under 100 lines. No narratives, histories,
-  timings or handoffs. The spec is the `Rule` doc comments, not a Markdown file.
-- No per-task, planning, validation or handoff Markdown files. Durable context
-  goes on the issue.
+`README.md` is a short entry point, under 100 lines. The spec is the `Rule` doc
+comments. No planning, validation or handoff files: durable context goes on the
+issue.
